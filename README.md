@@ -28,13 +28,15 @@ rosdep install --from-paths src --ignore-src -r -y
 ### 构建工作空间
 
 ```bash
-# 构建所有包
-colcon build --symlink-install
-
-# 加载环境
-source install/setup.bash
+cd ~/ros2_ws
+colcon build --packages-up-to ocs2_arm_controller dobot_ros2_control cr5_dual_description arms_teleop adaptive_gripper_controller --symlink-install
 ```
 
+### 启动双臂真机控制
+```bash
+  source ~/ros2_ws/install/setup.bash
+  ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5_dual hardware:=real type:=AG2F90-C-Soft
+  ```
 ## 子模块
 
 - **arms_ros2_control** - 机械臂ROS2控制实现
