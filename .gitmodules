@@ -7,3 +7,6 @@
 [submodule "src/robot-descriptions-dobot"]
 	path = src/robot-descriptions-dobot
 	url = https://github.com/fiveages-sim/robot-descriptions-dobot.git
+[submodule "src/robot-descriptions-common"]
+	path = src/robot-descriptions-common
+	url = https://github.com/fiveages-sim/robot-descriptions-common.git
