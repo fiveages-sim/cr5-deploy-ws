@@ -1,0 +1,3 @@
+[submodule "src/arms_ros2_control"]
+	path = src/arms_ros2_control
+	url = https://github.com/fiveages-sim/arms_ros2_control.git
