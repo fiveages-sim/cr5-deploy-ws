@@ -4,3 +4,6 @@
 [submodule "src/ocs2_ros2"]
 	path = src/ocs2_ros2
 	url = https://github.com/legubiao/ocs2_ros2.git
+[submodule "src/robot-descriptions-dobot"]
+	path = src/robot-descriptions-dobot
+	url = https://github.com/fiveages-sim/robot-descriptions-dobot.git
