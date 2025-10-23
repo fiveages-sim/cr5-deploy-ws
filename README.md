@@ -1,13 +1,13 @@
-# ROS2 Workspace
+# CR5 Deploy Workspace
 
-这是一个基于ROS2的机器人控制工作空间，包含OCS2 MPC控制框架和Dobot机械臂的完整控制生态系统。
+Dobot CR5双臂机器人部署工作空间，基于ROS2和OCS2 MPC控制框架的完整控制生态系统。
 
 ## Deploy
 
 ### 克隆仓库
 
 ```bash
-git clone <your-repo-url> ~/ros2_ws
+git clone https://github.com/fiveages-sim/cr5-deploy-ws.git ~/ros2_ws
 cd ~/ros2_ws
 ```
 
