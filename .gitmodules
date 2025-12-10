@@ -1,12 +1,16 @@
 [submodule "src/arms_ros2_control"]
 	path = src/arms_ros2_control
 	url = https://github.com/fiveages-sim/arms_ros2_control.git
+	branch = main
 [submodule "src/ocs2_ros2"]
 	path = src/ocs2_ros2
 	url = https://github.com/legubiao/ocs2_ros2.git
+	branch = ros2
 [submodule "src/robot-descriptions-dobot"]
 	path = src/robot-descriptions-dobot
 	url = https://github.com/fiveages-sim/robot-descriptions-dobot.git
+	branch = main
 [submodule "src/robot-descriptions-common"]
 	path = src/robot-descriptions-common
 	url = https://github.com/fiveages-sim/robot-descriptions-common.git
+	branch = main
