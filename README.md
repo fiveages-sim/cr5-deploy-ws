@@ -71,7 +71,7 @@ src/
   ```bash
   export RMW_IMPLEMENTATION=rmw_zenoh_cpp
   ```
-* 后续在使用robot-description-common中的luanch文件启动时，会自动拉起来一个zenoh路由
+* 后续在使用 `robot-descriptions-common` 中的 `launch` 文件启动时，会自动拉起来一个 zenoh 路由
 
 ## 3. 程序编译与仿真验证
 ### 3.1 依赖安装
@@ -81,11 +81,51 @@ cd ~/cr5-deploy-ws
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
-### 3.2 程序编译
+### 3.2 程序编译（推荐：使用 quick_start.sh）
+
+本工作空间已经提供一键脚本 `quick_start.sh`，用于**按场景编译**与**按模式启动**（单臂/双臂/vla39，仿真/真机/真机+HTTP Bridge）。
+
 ```bash
 cd ~/cr5-deploy-ws
-colcon build --packages-up-to ocs2_arm_controller basic_joint_controller cr5_dual_description arms_teleop adaptive_gripper_controller dobot_ros2_control --symlink-install
+chmod +x ./quick_start.sh
+./quick_start.sh
 ```
+
+- 在菜单中选择 **`1) 编译 (Build)`**
+  - **`1) 编译仿真所需包`**：用于仿真/开发（不依赖真机驱动）
+  - **`2) 编译真机所需包`**：用于连接真机（包含 `dobot_ros2_control` 等）
+
+<details>
+<summary><strong>（可选）手动编译命令</strong></summary>
+
+```bash
+cd ~/cr5-deploy-ws
+# 仿真所需包（对应 quick_start.sh -> Build -> Simulation Packages）
+colcon build --packages-up-to \
+  ocs2_arm_controller \
+  cr5_description \
+  cr5_dual_description \
+  arms_teleop \
+  adaptive_gripper_controller \
+  vla_http_bridge \
+  --symlink-install
+```
+
+```bash
+cd ~/cr5-deploy-ws
+# 真机所需包（对应 quick_start.sh -> Build -> Real Hardware Packages）
+colcon build --packages-up-to \
+  dobot_ros2_control \
+  ocs2_arm_controller \
+  cr5_description \
+  cr5_dual_description \
+  arms_teleop \
+  adaptive_gripper_controller \
+  vla_http_bridge \
+  --symlink-install
+```
+
+</details>
 
 ### 3.3 仿真验证
 #### 3.3.1 模型可视化
@@ -106,38 +146,69 @@ colcon build --packages-up-to ocs2_arm_controller basic_joint_controller cr5_dua
   ```
 
 #### 3.3.2 启动仿真中的控制
-* 左臂
-  ```bash
-  source ~/cr5-deploy-ws/install/setup.bash
-  ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5
-  ```
-* 带夹爪
-  ```bash
-  source ~/cr5-deploy-ws/install/setup.bash
-  ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5 type:=AG2F90-C-Soft
-  ```
-* 双臂
-  ```bash
-  source ~/cr5-deploy-ws/install/setup.bash
-  ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5_dual
-  ```
+推荐直接用 `quick_start.sh` 启动（会自动 `source install/setup.bash`，前提是已成功编译生成 `install/`）。
+
+```bash
+cd ~/cr5-deploy-ws
+./quick_start.sh
+```
+
+- 选择 **`2) 启动 (Launch)`**
+  - **`1) 单臂 (CR5)`** 或 **`2) 双臂 (CR5 Dual)`**
+  - 选择 **`1) 仿真 (Simulation / mock_components)`**
+
+<details>
+<summary><strong>（可选）手动启动仿真控制</strong></summary>
+
+```bash
+source ~/cr5-deploy-ws/install/setup.bash
+ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5 type:=AG2F90-C-Soft
+```
+
+```bash
+source ~/cr5-deploy-ws/install/setup.bash
+ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5_dual type:=AG2F90-C-Soft
+```
+
+</details>
 
 #### 3.3.3 启动真机的控制
-* 左臂
-  ```bash
-  source ~/cr5-deploy-ws/install/setup.bash
-  ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5 hardware:=real
-  ```
-* 带夹爪
-  ```bash
-  source ~/cr5-deploy-ws/install/setup.bash
-  ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5 hardware:=real type:=AG2F90-C-Soft
-  ```
-* 双臂
-  ```bash
-  source ~/cr5-deploy-ws/install/setup.bash
-  ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5_dual hardware:=real type:=AG2F90-C-Soft
-  ```
+同样推荐使用 `quick_start.sh`（脚本会提示你检查真机 IP 配置）：
+
+```bash
+cd ~/cr5-deploy-ws
+./quick_start.sh
+```
+
+- 选择 **`2) 启动 (Launch)`**
+  - **`1) 单臂 (CR5)`** / **`2) 双臂 (CR5 Dual)`** / **`3) 单臂 vla39 (CR5 vla39)`**
+  - 选择运行模式：
+    - **`2) 真机 (Real Hardware)`**：直接启动 `ocs2_arm_controller demo.launch.py ... hardware:=real`
+    - **`3) 真机 + HTTP Bridge`**：启动 `cr5_description dobot_bringup_ros2.launch.py ...`（包含 HTTP Bridge bringup）
+
+**真机 IP 配置提示**
+- **bringup 默认 IP**：`src/robot-descriptions-dobot/cr5_description/launch/dobot_bringup_ros2.launch.py`
+- **ros2_control 的 robot_ip**：通常在 `cr5_description/xacro/ros2_control/robot.xacro`（或同路径下的 ros2_control xacro 配置）
+
+<details>
+<summary><strong>（可选）手动启动真机控制</strong></summary>
+
+```bash
+source ~/cr5-deploy-ws/install/setup.bash
+ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5 hardware:=real type:=AG2F90-C-Soft
+```
+
+```bash
+source ~/cr5-deploy-ws/install/setup.bash
+ros2 launch ocs2_arm_controller demo.launch.py robot:=cr5_dual hardware:=real type:=AG2F90-C-Soft
+```
+
+```bash
+source ~/cr5-deploy-ws/install/setup.bash
+ros2 launch cr5_description dobot_bringup_ros2.launch.py robot:=cr5_dual hardware:=real type:=AG2F90-C-Soft
+```
+
+</details>
 
 ## 4. 子模块说明
 
