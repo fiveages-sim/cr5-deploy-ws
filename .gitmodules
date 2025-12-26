@@ -14,3 +14,10 @@
 	path = src/robot-descriptions-common
 	url = https://github.com/fiveages-sim/robot-descriptions-common.git
 	branch = main
+[submodule "src/dobot-cr-ros2-control"]
+	path = src/dobot-cr-ros2-control
+	url = https://github.com/fiveages-sim/dobot-cr-ros2-control.git
+	branch = main
+[submodule "src/vla_http_bridge"]
+	path = src/vla_http_bridge
+	url = https://github.com/fiveages-sim/vla_http_bridge.git
