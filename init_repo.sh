@@ -93,24 +93,7 @@ git submodule sync
 print_info "初始化所有子模块..."
 git submodule update --init
 
-# 初始化构建所需的嵌套子模块（根据 submodules_visibility.conf）
-print_info "初始化构建所需的嵌套子模块（根据配置文件）..."
-for spec in "${NESTED_PUBLIC_SPECS[@]}"; do
-    parent_dir="${spec%%:*}"
-    rest="${spec#*:}"
-    relative_path="${rest#*:}"
-    [ ! -d "$parent_dir" ] && continue
-    (cd "$parent_dir" && git submodule update --init "$relative_path") || print_warn "$parent_dir/$relative_path 初始化失败，跳过"
-done
-if [ "$INIT_MODE" = "private" ]; then
-    for spec in "${NESTED_PRIVATE_SPECS[@]}"; do
-        parent_dir="${spec%%:*}"
-        rest="${spec#*:}"
-        relative_path="${rest#*:}"
-        [ ! -d "$parent_dir" ] && continue
-        (cd "$parent_dir" && git submodule update --init "$relative_path") || print_warn "$parent_dir/$relative_path 初始化失败，跳过"
-    done
-fi
+# 嵌套子模块的初始化延后到第一层子模块切换分支之后，避免旧提交缺失路径导致 pathspec 报错
 
 # 遍历所有子模块并切换到对应分支
 print_info "将子模块切换到对应分支的最新提交..."
@@ -213,6 +196,25 @@ for submodule_path in $submodule_paths; do
         print_warn "子模块路径不存在: $submodule_path"
     fi
 done
+
+# 初始化构建所需的嵌套子模块（根据 submodules_visibility.conf）
+print_info "初始化构建所需的嵌套子模块（根据配置文件）..."
+for spec in "${NESTED_PUBLIC_SPECS[@]}"; do
+    parent_dir="${spec%%:*}"
+    rest="${spec#*:}"
+    relative_path="${rest#*:}"
+    [ ! -d "$parent_dir" ] && continue
+    (cd "$parent_dir" && git submodule update --init "$relative_path") || print_warn "$parent_dir/$relative_path 初始化失败，跳过"
+done
+if [ "$INIT_MODE" = "private" ]; then
+    for spec in "${NESTED_PRIVATE_SPECS[@]}"; do
+        parent_dir="${spec%%:*}"
+        rest="${spec#*:}"
+        relative_path="${rest#*:}"
+        [ ! -d "$parent_dir" ] && continue
+        (cd "$parent_dir" && git submodule update --init "$relative_path") || print_warn "$parent_dir/$relative_path 初始化失败，跳过"
+    done
+fi
 
 # 将构建所需的嵌套子模块切换到对应分支并更新到最新提交（根据配置文件）
 print_info "将构建所需的嵌套子模块切换到对应分支..."
