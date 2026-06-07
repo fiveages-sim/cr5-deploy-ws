@@ -25,6 +25,32 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+run_install_core_debs() {
+    print_info "安装核心 deb 包（顺序: ocs2 → common → arms_ros2_control）..."
+    local install_script="$REPO_DIR/scripts/install_core_debs.sh"
+    if [ ! -x "$install_script" ]; then
+        chmod +x "$install_script" 2>/dev/null || true
+    fi
+    if [ ! -f "$install_script" ]; then
+        print_error "未找到安装脚本: $install_script"
+        return 1
+    fi
+    bash "$install_script"
+}
+
+run_uninstall_core_debs() {
+    print_info "卸载核心 deb 包（顺序: arms_ros2_control → common → ocs2）..."
+    local uninstall_script="$REPO_DIR/scripts/uninstall_core_debs.sh"
+    if [ ! -x "$uninstall_script" ]; then
+        chmod +x "$uninstall_script" 2>/dev/null || true
+    fi
+    if [ ! -f "$uninstall_script" ]; then
+        print_error "未找到卸载脚本: $uninstall_script"
+        return 1
+    fi
+    bash "$uninstall_script"
+}
+
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$SCRIPT_DIR"
@@ -43,15 +69,149 @@ fi
 # 选择初始化模式
 echo ""
 echo "请选择初始化模式："
+echo ""
+echo "  --- 源码模式 ---"
 echo "  1) 仅初始化 public 仓库（适用于外部用户，无需私有仓库访问权限）"
 echo "  2) 初始化所有仓库，包含 private 仓库（需要内部仓库访问权限）"
-read -rp "请输入选项 [1/2]（默认: 1）: " mode_choice
-case "$mode_choice" in
-    2) INIT_MODE="private" ;;
-    *) INIT_MODE="public" ;;
-esac
-print_info "初始化模式: $INIT_MODE"
 echo ""
+echo "  --- deb 模式 ---"
+echo "  3) 快速模式：public 仓库 + 核心包 deb 安装（ocs2_ros2、arms_ros2_control、robot-descriptions/common）"
+echo "  4) 仅安装/更新核心 deb 包（跳过 Git 子模块拉取）"
+echo "  5) 卸载核心 deb 包"
+echo ""
+read -rp "请输入选项 [1/2/3/4/5]（默认: 1）: " mode_choice
+case "$mode_choice" in
+    2) INIT_MODE="private"; BUILD_MODE="source" ;;
+    3) INIT_MODE="public"; BUILD_MODE="quick" ;;
+    4) BUILD_MODE="deb_only" ;;
+    5) BUILD_MODE="deb_uninstall" ;;
+    *) INIT_MODE="public"; BUILD_MODE="source" ;;
+esac
+
+if [ "$BUILD_MODE" = "deb_only" ]; then
+    print_info "模式: 仅安装核心 deb 包（不拉取 Git 子模块）"
+    echo ""
+    run_install_core_debs || exit 1
+    print_info ""
+    print_info "完成后请执行: source /opt/ros/jazzy/setup.bash"
+    exit 0
+fi
+
+if [ "$BUILD_MODE" = "deb_uninstall" ]; then
+    print_info "模式: 卸载核心 deb 包"
+    echo ""
+    run_uninstall_core_debs || exit 1
+    exit 0
+fi
+
+print_info "初始化模式: $INIT_MODE"
+if [ "$BUILD_MODE" = "quick" ]; then
+    print_info "构建方式: 快速模式（核心包使用 deb，默认从 GitHub 最新 release 安装）"
+else
+    print_info "构建方式: 源码编译"
+fi
+echo ""
+
+# 快速模式下跳过顶层子模块（改由 deb 提供）
+QUICK_SKIP_TOP_SUBMODULES=(
+    "src/arms_ros2_control"
+    "src/ocs2_ros2"
+)
+# 快速模式下跳过嵌套子模块
+QUICK_SKIP_NESTED_PATHS=(
+    "common"
+)
+should_skip_top_submodule() {
+    local path="$1"
+    [ "$BUILD_MODE" != "quick" ] && return 1
+    local p
+    for p in "${QUICK_SKIP_TOP_SUBMODULES[@]}"; do
+        [ "$path" = "$p" ] && return 0
+    done
+    return 1
+}
+should_skip_nested_path() {
+    local relative_path="$1"
+    [ "$BUILD_MODE" != "quick" ] && return 1
+    local p
+    for p in "${QUICK_SKIP_NESTED_PATHS[@]}"; do
+        [ "$relative_path" = "$p" ] && return 0
+    done
+    return 1
+}
+should_skip_nested_spec() {
+    local parent_dir="$1"
+    local relative_path="$2"
+    [ "$BUILD_MODE" != "quick" ] && return 1
+    case "$parent_dir" in
+        src/arms_ros2_control|src/ocs2_ros2) return 0 ;;
+    esac
+    should_skip_nested_path "$relative_path"
+}
+
+# 快速模式：清理此前源码初始化、改由 deb 提供的仓库
+path_has_submodule_content() {
+    local path="$1"
+    [ -d "$REPO_DIR/$path" ] || return 1
+    [ -e "$REPO_DIR/$path/.git" ] && return 0
+    [ -n "$(ls -A "$REPO_DIR/$path" 2>/dev/null)" ]
+}
+
+quick_mode_remove_submodule_path() {
+    local path="$1"
+    print_info "清理: $path"
+
+    case "$path" in
+        src/robot-descriptions/common)
+            if [ -d "$REPO_DIR/src/robot-descriptions" ]; then
+                (cd "$REPO_DIR/src/robot-descriptions" && git submodule deinit -f -- common) \
+                    2>/dev/null || print_warn "  deinit $path 失败，继续删除目录..."
+            fi
+            rm -rf "$REPO_DIR/$path"
+            rm -rf "$REPO_DIR/.git/modules/src/robot-descriptions/modules/common" 2>/dev/null || true
+            ;;
+        *)
+            git -C "$REPO_DIR" submodule deinit -f -- "$path" \
+                2>/dev/null || print_warn "  deinit $path 失败，继续删除目录..."
+            rm -rf "$REPO_DIR/$path"
+            rm -rf "$REPO_DIR/.git/modules/$path" 2>/dev/null || true
+            ;;
+    esac
+    print_info "✓ 已清理 $path"
+}
+
+quick_mode_cleanup_deb_repos() {
+    local paths_to_clean=() p relative_path full_path clean_choice
+
+    for p in "${QUICK_SKIP_TOP_SUBMODULES[@]}"; do
+        path_has_submodule_content "$p" && paths_to_clean+=("$p")
+    done
+    for relative_path in "${QUICK_SKIP_NESTED_PATHS[@]}"; do
+        full_path="src/robot-descriptions/$relative_path"
+        path_has_submodule_content "$full_path" && paths_to_clean+=("$full_path")
+    done
+
+    if [ ${#paths_to_clean[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    print_warn "快速模式检测到以下已由源码初始化的目录（将改由 deb 提供）："
+    for p in "${paths_to_clean[@]}"; do
+        print_warn "  - $p"
+    done
+    read -rp "是否清理上述目录？[Y/n]: " clean_choice
+    case "$clean_choice" in
+        n|N|no|NO)
+            print_warn "已跳过清理，快速模式将继续（可能仍占用磁盘空间）"
+            return 0
+            ;;
+    esac
+
+    for p in "${paths_to_clean[@]}"; do
+        quick_mode_remove_submodule_path "$p"
+    done
+    echo ""
+}
 
 # 嵌套子模块可见性配置文件（可编辑此文件以调整 public/private）
 VISIBILITY_CONF="$REPO_DIR/submodules_visibility.conf"
@@ -83,15 +243,31 @@ done < "$VISIBILITY_CONF"
 print_info "已从 $VISIBILITY_CONF 加载嵌套子模块配置（public: ${#NESTED_PUBLIC_SPECS[@]} 项, private: ${#NESTED_PRIVATE_SPECS[@]} 项）"
 echo ""
 
+if [ "$BUILD_MODE" = "quick" ]; then
+    quick_mode_cleanup_deb_repos
+fi
+
 print_info "开始初始化子模块..."
 
 # 同步子模块配置（不递归，只处理第一层子模块）
 print_info "同步子模块配置..."
 git submodule sync
 
-# 初始化所有子模块（不递归，只处理第一层子模块）
-print_info "初始化所有子模块..."
-git submodule update --init
+# 初始化顶层子模块（不递归；快速模式跳过由 deb 提供的仓库）
+if [ "$BUILD_MODE" = "quick" ]; then
+    print_info "初始化顶层子模块（快速模式：跳过 ocs2_ros2、arms_ros2_control）..."
+    quick_init_paths=()
+    while IFS= read -r submodule_path; do
+        should_skip_top_submodule "$submodule_path" && continue
+        quick_init_paths+=("$submodule_path")
+    done < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+    if [ ${#quick_init_paths[@]} -gt 0 ]; then
+        git submodule update --init "${quick_init_paths[@]}"
+    fi
+else
+    print_info "初始化所有子模块..."
+    git submodule update --init
+fi
 
 # 嵌套子模块的初始化延后到第一层子模块切换分支之后，避免旧提交缺失路径导致 pathspec 报错
 
@@ -102,6 +278,10 @@ print_info "将子模块切换到对应分支的最新提交..."
 submodule_paths=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
 
 for submodule_path in $submodule_paths; do
+    if should_skip_top_submodule "$submodule_path"; then
+        print_info "跳过子模块（deb 安装）: $submodule_path"
+        continue
+    fi
     # 获取对应的分支配置
     branch_name=$(git config --file .gitmodules --get "submodule.$submodule_path.branch" || echo "main")
     
@@ -203,6 +383,10 @@ for spec in "${NESTED_PUBLIC_SPECS[@]}"; do
     parent_dir="${spec%%:*}"
     rest="${spec#*:}"
     relative_path="${rest#*:}"
+    if should_skip_nested_spec "$parent_dir" "$relative_path"; then
+        print_info "跳过嵌套子模块（deb 安装）: $parent_dir/$relative_path"
+        continue
+    fi
     [ ! -d "$parent_dir" ] && continue
     (cd "$parent_dir" && git submodule update --init "$relative_path") || print_warn "$parent_dir/$relative_path 初始化失败，跳过"
 done
@@ -211,6 +395,10 @@ if [ "$INIT_MODE" = "private" ]; then
         parent_dir="${spec%%:*}"
         rest="${spec#*:}"
         relative_path="${rest#*:}"
+        if should_skip_nested_spec "$parent_dir" "$relative_path"; then
+            print_info "跳过嵌套子模块（deb 安装）: $parent_dir/$relative_path"
+            continue
+        fi
         [ ! -d "$parent_dir" ] && continue
         (cd "$parent_dir" && git submodule update --init "$relative_path") || print_warn "$parent_dir/$relative_path 初始化失败，跳过"
     done
@@ -227,6 +415,9 @@ for nested_spec in "${nested_specs[@]}"; do
     rest="${nested_spec#*:}"
     gitmodules_file="${rest%%:*}"
     relative_path="${rest#*:}"
+    if should_skip_nested_spec "$parent_dir" "$relative_path"; then
+        continue
+    fi
     full_path="$REPO_DIR/$parent_dir/$relative_path"
     if [ ! -d "$full_path" ]; then continue; fi
     if ! (cd "$full_path" && git rev-parse --git-dir >/dev/null 2>&1); then continue; fi
@@ -277,10 +468,38 @@ git submodule status
 print_info ""
 print_info "安装 rosdep 依赖..."
 if command -v rosdep >/dev/null 2>&1; then
-    rosdep install --from-paths src --ignore-src -r -y || print_warn "rosdep 安装部分依赖失败，可稍后重试或检查 package.xml"
+    if [ "$BUILD_MODE" = "quick" ]; then
+        rosdep_paths=()
+        while IFS= read -r submodule_path; do
+            should_skip_top_submodule "$submodule_path" && continue
+            rosdep_paths+=("$submodule_path")
+        done < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+        if [ ${#rosdep_paths[@]} -gt 0 ]; then
+            rosdep install --from-paths "${rosdep_paths[@]}" --ignore-src -r -y \
+                || print_warn "rosdep 安装部分依赖失败，可稍后重试或检查 package.xml"
+        fi
+    else
+        rosdep install --from-paths src --ignore-src -r -y \
+            || print_warn "rosdep 安装部分依赖失败，可稍后重试或检查 package.xml"
+    fi
 else
     print_warn "未找到 rosdep，请先安装 ROS 环境后手动运行："
-    print_info "  cd $REPO_DIR && rosdep install --from-paths src --ignore-src -r -y"
+    if [ "$BUILD_MODE" = "quick" ]; then
+        print_info "  cd $REPO_DIR && rosdep install --from-paths src/robot-descriptions --ignore-src -r -y"
+    else
+        print_info "  cd $REPO_DIR && rosdep install --from-paths src --ignore-src -r -y"
+    fi
+fi
+
+# 快速模式：安装核心 deb 包
+if [ "$BUILD_MODE" = "quick" ]; then
+    print_info ""
+    run_install_core_debs || print_error "deb 安装失败，请检查 deb_versions.conf 或网络连接"
+    print_info ""
+    print_info "快速模式后续步骤："
+    print_info "  1. source /opt/ros/jazzy/setup.bash"
+    print_info "  2. 仅需编译 robot-descriptions 中的机器人模型包，例如："
+    print_info "     colcon build --packages-up-to <robot>_description --symlink-install"
 fi
 
 print_info ""

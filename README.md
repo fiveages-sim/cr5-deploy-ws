@@ -40,15 +40,22 @@ cd ros2_ws
 ```
 
 **运行 `init_repo.sh` 时可选择初始化模式：**
-- **public**（默认，直接回车即选）：仅初始化公开子模块，适用于外部用户，无需私有仓库权限。
-- **private**：初始化所有子模块（含私有仓库），需要具备内部仓库访问权限。
+
+**源码模式**
+- **public**（选项 1，默认）：仅初始化公开子模块，适用于外部用户，无需私有仓库权限。
+- **private**（选项 2）：初始化所有子模块（含私有仓库），需要具备内部仓库访问权限。
+
+**deb 模式**
+- **快速模式**（选项 3）：public 子模块 + 通过 deb 安装 `ocs2_ros2`、`arms_ros2_control`、`robot-descriptions/common`，无需克隆和编译这三个大型仓库。deb 默认从 GitHub 最新 release 下载，安装顺序为 ocs2 → common → arms，仓库配置见 [`deb_versions.conf`](deb_versions.conf)。
+- **仅 deb**（选项 4）：只下载并安装核心 deb 包，**不拉取 Git 子模块**，适合已初始化工作空间后单独更新 deb。也可直接运行 `./scripts/install_core_debs.sh`。
+- **卸载 deb**（选项 5）：一键卸载上述三个 deb 包（逆序）。也可直接运行 `./scripts/uninstall_core_debs.sh`。
 
 **脚本随后会：**
-1. 同步并初始化顶层子模块
-2. 根据所选模式与 `submodules_visibility.conf` 初始化嵌套子模块
+1. 同步并初始化顶层子模块（快速模式跳过 ocs2 / arms 子模块；若此前已初始化会提示清理）
+2. 根据所选模式与 `submodules_visibility.conf` 初始化嵌套子模块（快速模式跳过 `common`）
 3. 将所有子模块切换到配置的分支并拉取最新提交
 4. 运行 `rosdep install` 安装系统依赖
-5. 运行 `colcon build` 编译所有核心包
+5. **快速模式**：运行 `scripts/install_core_debs.sh` 安装预编译 deb；**源码模式**：自行 `colcon build` 编译工作空间
 
 
 ## 测试环境
