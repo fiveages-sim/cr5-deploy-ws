@@ -36,7 +36,7 @@ cd "$REPO_DIR"
 if [ ! -d ".git" ]; then
     print_error "当前目录不是 git 仓库！"
     print_info "请先克隆主仓库："
-    print_info "  git clone -b panthera-ht git@github.com:fiveages-sim/open-deploy-ws.git open-deploy-ws-ht"
+    print_info "  git clone -b panthera-ht git@github.com:fiveages-sim/open-deploy-ws.git ht-deploy-ws"
     exit 1
 fi
 

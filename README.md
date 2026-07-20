@@ -7,23 +7,23 @@
 - 系统已安装 Git（建议 2.30+）
 
 ## 1. 仓库初始化
-### 将仓库克隆到 ~/open-deploy-ws-ht
+### 将仓库克隆到 ~/ht-deploy-ws
 ```bash
   # 1) 切换到用户主目录
   cd ~
   
-  # 2) 克隆仓库（目录名可按需修改）
-  git clone -b panthera-ht git@github.com:fiveages-sim/open-deploy-ws.git open-deploy-ws-ht
+  # 2) 克隆 panthera-ht 分支到规范工作区目录 ht-deploy-ws
+  git clone -b panthera-ht git@github.com:fiveages-sim/open-deploy-ws.git ht-deploy-ws
   
   # 3) 进入仓库目录
-  cd ~/open-deploy-ws-ht
+  cd ~/ht-deploy-ws
 ```
 
 ### 初始化并更新子模块
 
 ```bash
   # 运行初始化脚本，自动将所有子模块切换到对应分支的最新提交
-  cd ~/open-deploy-ws-ht
+  cd ~/ht-deploy-ws
   ./init_repo.sh
 ```
 
@@ -69,7 +69,7 @@ src/
 ### 3.1 依赖安装
 * Rosdep 依赖安装
 ```bash
-cd ~/open-deploy-ws-ht
+cd ~/ht-deploy-ws
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
@@ -78,7 +78,7 @@ rosdep install --from-paths src --ignore-src -r -y
 本工作空间已经提供一键脚本 `quick_start.sh`，用于**按场景编译**与**按模式启动**（单臂 / 双臂，仿真 / 真机）。
 
 ```bash
-cd ~/open-deploy-ws-ht
+cd ~/ht-deploy-ws
 chmod +x ./quick_start.sh
 ./quick_start.sh
 ```
@@ -91,7 +91,7 @@ chmod +x ./quick_start.sh
 <summary><strong>（可选）手动编译命令</strong></summary>
 
 ```bash
-cd ~/open-deploy-ws-ht
+cd ~/ht-deploy-ws
 # 仿真所需包
 colcon build --packages-up-to \
   ocs2_arm_controller \
@@ -103,7 +103,7 @@ colcon build --packages-up-to \
 ```
 
 ```bash
-cd ~/open-deploy-ws-ht
+cd ~/ht-deploy-ws
 # 真机所需包
 colcon build --packages-up-to \
   panthera_ros2_control \
@@ -120,7 +120,7 @@ colcon build --packages-up-to \
 ### 3.3 仿真验证
 #### 3.3.1 模型可视化
 ```bash
-source ~/open-deploy-ws-ht/install/setup.bash
+source ~/ht-deploy-ws/install/setup.bash
 ros2 launch robot_common_launch manipulator.launch.py robot:=panthera_ht
 ```
 
@@ -133,7 +133,7 @@ ros2 launch robot_common_launch manipulator.launch.py robot:=panthera_ht type:=d
 推荐直接用 `quick_start.sh` 启动（会自动 `source install/setup.bash`，前提是已成功编译生成 `install/`）。
 
 ```bash
-cd ~/open-deploy-ws-ht
+cd ~/ht-deploy-ws
 ./quick_start.sh
 ```
 
@@ -145,7 +145,7 @@ cd ~/open-deploy-ws-ht
 <summary><strong>（可选）手动启动仿真控制</strong></summary>
 
 ```bash
-source ~/open-deploy-ws-ht/install/setup.bash
+source ~/ht-deploy-ws/install/setup.bash
 # 单臂
 ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht
 # 双臂
@@ -157,7 +157,7 @@ ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=dual
 #### 3.3.3 启动真机的控制
 
 ```bash
-cd ~/open-deploy-ws-ht
+cd ~/ht-deploy-ws
 ./quick_start.sh
 ```
 
@@ -169,7 +169,7 @@ cd ~/open-deploy-ws-ht
 <summary><strong>（可选）手动启动真机控制</strong></summary>
 
 ```bash
-source ~/open-deploy-ws-ht/install/setup.bash
+source ~/ht-deploy-ws/install/setup.bash
 # 单臂
 ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht hardware:=real
 # 双臂
@@ -193,7 +193,7 @@ sudo apt install ros-jazzy-joy
 
 或手动：
 ```bash
-source ~/open-deploy-ws-ht/install/setup.bash
+source ~/ht-deploy-ws/install/setup.bash
 ros2 launch arms_teleop joystick_teleop.launch.py
 # 多手柄时指定设备：
 # ros2 launch arms_teleop joystick_teleop.launch.py joy_dev:=/dev/input/js1
