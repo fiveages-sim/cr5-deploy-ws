@@ -21,28 +21,67 @@ DOWNLOAD_DIR="${REPO_DIR}/.deb_cache"
 
 trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; echo "${v%"${v##*[![:space:]]}"}"; }
 
+# 短名 → 包前缀（用于 --only）
+resolve_only_token() {
+  case "$1" in
+    ocs2|ocs2_ros2|ros-jazzy-ocs2) echo "ros-jazzy-ocs2" ;;
+    common|robot-descriptions-common|ros-jazzy-robot-descriptions-common) echo "ros-jazzy-robot-descriptions-common" ;;
+    arms|arms_ros2_control|ros-jazzy-arms-ros2-control) echo "ros-jazzy-arms-ros2-control" ;;
+    *) return 1 ;;
+  esac
+}
+
 usage() {
   cat <<EOF
-用法: install_core_debs.sh [--ros-distro <distro>] [--config <file>]
+用法: install_core_debs.sh [--ros-distro <distro>] [--config <file>] [--only <list>]
 
 从 deb_versions.conf 读取仓库信息，按依赖顺序安装核心 deb 包：
   1. ros-jazzy-ocs2
   2. ros-jazzy-robot-descriptions-common
   3. ros-jazzy-arms-ros2-control（标准版，不含硬件驱动）
 
+  --only <list>  仅安装指定包，逗号分隔。可用短名：ocs2, common, arms
+                 示例: --only ocs2  或  --only ocs2,arms
+                 未指定时安装配置文件中的全部包。
+
 配置中 tag 留空或填 latest 时，自动从 GitHub 获取最新 release。
 安装使用 apt-get install，自动处理依赖。
 EOF
 }
 
+ONLY_FILTER=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ros-distro) ROS_DISTRO="$2"; shift 2 ;;
     --config) DEB_CONF="$2"; shift 2 ;;
+    --only)
+      IFS=',' read -ra _only_tokens <<< "$2"
+      for _tok in "${_only_tokens[@]}"; do
+        _tok="$(trim "$_tok")"
+        [[ -z "$_tok" ]] && continue
+        if ! _resolved="$(resolve_only_token "$_tok")"; then
+          print_error "未知 --only 项: $_tok（可用: ocs2, common, arms）"
+          exit 1
+        fi
+        ONLY_FILTER+=("$_resolved")
+      done
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *) print_error "未知参数: $1"; usage; exit 1 ;;
   esac
 done
+
+should_install_prefix() {
+  local prefix="$1" f
+  if [[ ${#ONLY_FILTER[@]} -eq 0 ]]; then
+    return 0
+  fi
+  for f in "${ONLY_FILTER[@]}"; do
+    [[ "$f" == "$prefix" ]] && return 0
+  done
+  return 1
+}
 
 if [[ -z "$DEB_ARCH" ]]; then
   print_error "无法检测 dpkg 架构，请确认在 Debian/Ubuntu 环境中运行。"
@@ -398,17 +437,36 @@ fi
 print_info "安装核心 deb 包（ROS ${ROS_DISTRO}，架构 ${DEB_ARCH}）"
 print_info "安装顺序: ocs2 → common → arms_ros2_control"
 print_info "配置文件: $DEB_CONF"
+if [[ ${#ONLY_FILTER[@]} -gt 0 ]]; then
+  print_info "仅安装: ${ONLY_FILTER[*]}"
+fi
 echo "" >&2
 
 installed=()
-step=1
+step=0
+total_to_install=0
+for spec in "${DEB_SPECS[@]}"; do
+  IFS='|' read -r prefix _tag _repo <<< "$spec"
+  prefix="$(trim "$prefix")"
+  should_install_prefix "$prefix" && total_to_install=$((total_to_install + 1))
+done
+if [[ "$total_to_install" -eq 0 ]]; then
+  print_error "没有匹配 --only 的包可安装"
+  exit 1
+fi
+
 for spec in "${DEB_SPECS[@]}"; do
   IFS='|' read -r prefix tag primary_repo <<< "$spec"
   prefix="$(trim "$prefix")"
   tag="$(trim "$tag")"
   primary_repo="$(trim "$primary_repo")"
 
-  print_info "[${step}/${#DEB_SPECS[@]}] 处理 ${prefix} ..."
+  if ! should_install_prefix "$prefix"; then
+    continue
+  fi
+
+  step=$((step + 1))
+  print_info "[${step}/${total_to_install}] 处理 ${prefix} ..."
   deb_path="$(download_deb_for_package "$prefix" "$tag" "$primary_repo")" || exit 1
   if [[ "$prefix" == "ros-jazzy-robot-descriptions-common" ]]; then
     prepare_common_deb_install
@@ -418,7 +476,6 @@ for spec in "${DEB_SPECS[@]}"; do
     exit 1
   }
   installed+=("$prefix")
-  step=$((step + 1))
   echo "" >&2
 done
 

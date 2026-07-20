@@ -2,6 +2,20 @@
 
 ROS2 部署工作空间，集成双臂机械臂控制、机器人描述模型与 OCS2 MPC 框架。
 
+## 关于其他分支
+
+`main` 面向完整 / 通用部署工作空间。仓库中还有面向特定机型的精简分支，**只拉取该方案所需的包与子模块**，以减小克隆与部署体积：
+
+- **`dobot-cr5`**：Dobot CR5 部署工作空间，仅包含 CR5 相关描述、驱动与控制依赖
+- **`arx-acone`**：ARX Acone 部署工作空间，仅包含 Acone 相关描述、驱动与控制依赖
+
+使用时在克隆时指定分支，建议目录名与机型对应，例如：
+
+```bash
+git clone -b dobot-cr5 git@github.com:fiveages-sim/open-deploy-ws.git dobot_cr5_ws
+git clone -b arx-acone git@github.com:fiveages-sim/open-deploy-ws.git arx_acone_ws
+```
+
 ## 工作空间结构
 
 ```
@@ -10,7 +24,7 @@ open-deploy-ws/
 │   ├── arms_ros2_control/     # 机械臂控制核心（控制器 / 命令 / 硬件接口 / 公共库）
 │   ├── robot-descriptions/    # 机器人描述（common / manipulator / humanoid）
 │   └── ocs2_ros2/             # OCS2 MPC 框架
-├── init_repo.sh               # 一键初始化 + 编译
+├── init_repo.sh               # 一键初始化（可见性 + 逐模块 source/deb）
 └── README.md
 ```
 
@@ -39,24 +53,59 @@ cd ros2_ws
 ./init_repo.sh
 ```
 
-**运行 `init_repo.sh` 时可选择初始化模式：**
+### `init_repo.sh` 操作说明
 
-**源码模式**
-- **public**（选项 1，默认）：仅初始化公开子模块，适用于外部用户，无需私有仓库权限。
-- **private**（选项 2）：初始化所有子模块（含私有仓库），需要具备内部仓库访问权限。
+**1) 初始化工作空间（推荐）**
 
-**deb 模式**
-- **快速模式**（选项 3）：public 子模块 + 通过 deb 安装 `ocs2_ros2`、`arms_ros2_control`、`robot-descriptions/common`，无需克隆和编译这三个大型仓库。deb 默认从 GitHub 最新 release 下载，安装顺序为 ocs2 → common → arms，仓库配置见 [`deb_versions.conf`](deb_versions.conf)。
-- **仅 deb**（选项 4）：只下载并安装核心 deb 包，**不拉取 Git 子模块**，适合已初始化工作空间后单独更新 deb。也可直接运行 `./scripts/install_core_debs.sh`。
-- **卸载 deb**（选项 5）：一键卸载上述三个 deb 包（逆序）。也可直接运行 `./scripts/uninstall_core_debs.sh`。
+分两步选择：
 
-**脚本随后会：**
-1. 同步并初始化顶层子模块（快速模式跳过 ocs2 / arms 子模块；若此前已初始化会提示清理）
-2. 根据所选模式与 `submodules_visibility.conf` 初始化嵌套子模块（快速模式跳过 `common`）
-3. 将所有子模块切换到配置的分支并拉取最新提交
-4. 运行 `rosdep install` 安装系统依赖
-5. **快速模式**：运行 `scripts/install_core_debs.sh` 安装预编译 deb；**源码模式**：自行 `colcon build` 编译工作空间
+1. **嵌套可见性**（只影响各仓库内部的嵌套子模块；顶层三个仓在选 source 时都会初始化）
+   - **public**：仅公开嵌套，适用于外部用户
+   - **private**：含私有嵌套，需要内部仓库权限
+2. **核心模块安装方式**（逐项 `d`=deb / `s`=source，回车用默认）
 
+| 模块 | 路径 | deb 包 | 默认 |
+|------|------|--------|------|
+| ocs2 | `src/ocs2_ros2` | `ros-jazzy-ocs2` | **deb** |
+| arms | `src/arms_ros2_control` | `ros-jazzy-arms-ros2-control` | source |
+| common | `src/robot-descriptions/common` | `ros-jazzy-robot-descriptions-common` | source |
+
+推荐业务组合（脚本默认）：**ocs2=deb，arms/common=source**。全源码即三模块都选 `s`；全 deb 即三模块都选 `d`。
+
+**2) 切换模块安装方式**
+
+探测当前 dpkg / 源码目录状态，按模块在 source ↔ deb 之间切换（会清理冲突源码或卸载对应 deb），然后按目标重新同步。
+
+**3) 仅安装/更新核心 deb**
+
+跳过 Git 拉取；可输入 `ocs2`、`common`、`arms`（逗号分隔），回车表示全部。也可直接运行：
+
+```bash
+./scripts/install_core_debs.sh --only ocs2
+```
+
+**4) 卸载核心 deb**
+
+可指定包或全部；也可运行 `./scripts/uninstall_core_debs.sh --only ocs2`。
+
+**5) 仅运行 rosdep**
+
+对整个 `src` 安装系统依赖（不拉取子模块、不装 deb）：
+
+```bash
+rosdep install --from-paths src --ignore-src -r -y
+```
+
+deb 版本与仓库见 [`deb_versions.conf`](deb_versions.conf)；嵌套 public/private 见 [`submodules_visibility.conf`](submodules_visibility.conf)。
+
+### 脚本随后会
+
+1. 同步并初始化选为 **source** 的顶层子模块（选 deb 的跳过；若已有源码会提示清理）
+2. 按可见性与配置初始化嵌套子模块（父仓或 common 为 deb 时跳过）
+3. 将源码子模块切换到配置分支并拉取最新提交
+4. 对源码路径运行 `rosdep install`
+5. 安装选为 deb 的包（顺序：ocs2 → common → arms）
+6. 将选择写入本地 `.core_module_mode`（已 gitignore），供下次默认参考
 
 ## 测试环境
 

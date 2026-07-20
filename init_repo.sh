@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 第五纪双臂轮式人形机器人W1 ROS2部署工作空间初始化脚本
-# 功能：自动初始化仓库并将所有子模块切换到对应分支的最新提交
+# 功能：按嵌套可见性 + 逐模块 source/deb 选择初始化子模块，并支持源码↔deb 切换
 
 # 不设置 set -e，允许某些命令失败后继续执行
 set -u  # 遇到未定义变量时退出
@@ -12,7 +12,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# 打印带颜色的消息
 print_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
@@ -25,7 +24,36 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# 获取脚本所在目录的绝对路径
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$SCRIPT_DIR"
+MODE_STATE_FILE="$REPO_DIR/.core_module_mode"
+
+# 模块安装方式：1=deb，0=source
+USE_DEB_OCS2=1
+USE_DEB_ARMS=0
+USE_DEB_COMMON=0
+INIT_MODE="public"
+FLOW="init"  # init | deb_only | deb_uninstall | switch | rosdep
+
+run_rosdep_install() {
+    print_info "运行: rosdep install --from-paths src --ignore-src -r -y"
+    if ! command -v rosdep >/dev/null 2>&1; then
+        print_error "未找到 rosdep，请先安装 ROS 环境后重试"
+        print_info "  sudo apt install python3-rosdep"
+        print_info "  sudo rosdep init && rosdep update"
+        return 1
+    fi
+    if [ ! -d "$REPO_DIR/src" ]; then
+        print_error "未找到 src 目录: $REPO_DIR/src"
+        return 1
+    fi
+    rosdep install --from-paths src --ignore-src -r -y \
+        || print_warn "rosdep 安装部分依赖失败，可稍后重试或检查 package.xml"
+}
+
 run_install_core_debs() {
+    local only_list="${1:-}"
     print_info "安装核心 deb 包（顺序: ocs2 → common → arms_ros2_control）..."
     local install_script="$REPO_DIR/scripts/install_core_debs.sh"
     if [ ! -x "$install_script" ]; then
@@ -35,10 +63,15 @@ run_install_core_debs() {
         print_error "未找到安装脚本: $install_script"
         return 1
     fi
-    bash "$install_script"
+    if [ -n "$only_list" ]; then
+        bash "$install_script" --only "$only_list"
+    else
+        bash "$install_script"
+    fi
 }
 
 run_uninstall_core_debs() {
+    local only_list="${1:-}"
     print_info "卸载核心 deb 包（顺序: arms_ros2_control → common → ocs2）..."
     local uninstall_script="$REPO_DIR/scripts/uninstall_core_debs.sh"
     if [ ! -x "$uninstall_script" ]; then
@@ -48,12 +81,139 @@ run_uninstall_core_debs() {
         print_error "未找到卸载脚本: $uninstall_script"
         return 1
     fi
-    bash "$uninstall_script"
+    if [ -n "$only_list" ]; then
+        bash "$uninstall_script" --only "$only_list"
+    else
+        bash "$uninstall_script"
+    fi
 }
 
-# 获取脚本所在目录的绝对路径
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$SCRIPT_DIR"
+save_module_mode_state() {
+    cat > "$MODE_STATE_FILE" <<EOF
+# 上次 init_repo.sh 选择的模块安装方式（deb=1 / source=0）
+INIT_MODE=$INIT_MODE
+USE_DEB_OCS2=$USE_DEB_OCS2
+USE_DEB_ARMS=$USE_DEB_ARMS
+USE_DEB_COMMON=$USE_DEB_COMMON
+EOF
+}
+
+is_pkg_installed() {
+    dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"
+}
+
+path_has_submodule_content() {
+    local path="$1"
+    [ -d "$REPO_DIR/$path" ] || return 1
+    [ -e "$REPO_DIR/$path/.git" ] && return 0
+    [ -n "$(ls -A "$REPO_DIR/$path" 2>/dev/null)" ]
+}
+
+path_is_git_checkout() {
+    local path="$1"
+    [ -e "$REPO_DIR/$path/.git" ] || return 1
+    (cd "$REPO_DIR/$path" && git rev-parse --git-dir >/dev/null 2>&1)
+}
+
+detect_module_state() {
+    # 输出: deb | source | mixed | none
+    local path="$1"
+    local deb_pkg="$2"
+    local has_deb=0 has_src=0
+    is_pkg_installed "$deb_pkg" && has_deb=1
+    path_is_git_checkout "$path" && has_src=1
+    if [ "$has_deb" -eq 1 ] && [ "$has_src" -eq 1 ]; then
+        echo "mixed"
+    elif [ "$has_deb" -eq 1 ]; then
+        echo "deb"
+    elif [ "$has_src" -eq 1 ]; then
+        echo "source"
+    else
+        echo "none"
+    fi
+}
+
+module_short_to_path() {
+    case "$1" in
+        ocs2) echo "src/ocs2_ros2" ;;
+        arms) echo "src/arms_ros2_control" ;;
+        common) echo "src/robot-descriptions/common" ;;
+        *) return 1 ;;
+    esac
+}
+
+module_short_to_deb() {
+    case "$1" in
+        ocs2) echo "ros-jazzy-ocs2" ;;
+        arms) echo "ros-jazzy-arms-ros2-control" ;;
+        common) echo "ros-jazzy-robot-descriptions-common" ;;
+        *) return 1 ;;
+    esac
+}
+
+get_use_deb_for_module() {
+    case "$1" in
+        ocs2) echo "$USE_DEB_OCS2" ;;
+        arms) echo "$USE_DEB_ARMS" ;;
+        common) echo "$USE_DEB_COMMON" ;;
+        *) echo "0" ;;
+    esac
+}
+
+set_use_deb_for_module() {
+    case "$1" in
+        ocs2) USE_DEB_OCS2="$2" ;;
+        arms) USE_DEB_ARMS="$2" ;;
+        common) USE_DEB_COMMON="$2" ;;
+    esac
+}
+
+selected_deb_only_list() {
+    local parts=()
+    [ "$USE_DEB_OCS2" -eq 1 ] && parts+=("ocs2")
+    [ "$USE_DEB_COMMON" -eq 1 ] && parts+=("common")
+    [ "$USE_DEB_ARMS" -eq 1 ] && parts+=("arms")
+    if [ ${#parts[@]} -eq 0 ]; then
+        echo ""
+    else
+        local IFS=,
+        echo "${parts[*]}"
+    fi
+}
+
+prompt_sd() {
+    # $1=提示 $2=默认 d|s → 设置变量名为 $3 的 1/0
+    local prompt="$1"
+    local default="$2"
+    local __result_var="$3"
+    local choice default_hint
+    if [ "$default" = "d" ]; then
+        default_hint="D/s"
+    else
+        default_hint="d/S"
+    fi
+    read -rp "$prompt [$default_hint]: " choice
+    choice="${choice:-$default}"
+    case "$choice" in
+        d|D|deb|DEB) printf -v "$__result_var" '%s' "1" ;;
+        s|S|source|SOURCE) printf -v "$__result_var" '%s' "0" ;;
+        *)
+            if [ "$default" = "d" ]; then
+                printf -v "$__result_var" '%s' "1"
+            else
+                printf -v "$__result_var" '%s' "0"
+            fi
+            ;;
+    esac
+}
+
+mode_label() {
+    if [ "$1" -eq 1 ]; then
+        echo "deb"
+    else
+        echo "source"
+    fi
+}
 
 print_info "工作空间目录: $REPO_DIR"
 cd "$REPO_DIR"
@@ -66,100 +226,195 @@ if [ ! -d ".git" ]; then
     exit 1
 fi
 
-# 选择初始化模式
+# 选择流程
 echo ""
-echo "请选择初始化模式："
+echo "请选择操作："
 echo ""
-echo "  --- 源码模式 ---"
-echo "  1) 仅初始化 public 仓库（适用于外部用户，无需私有仓库访问权限）"
-echo "  2) 初始化所有仓库，包含 private 仓库（需要内部仓库访问权限）"
+echo "  1) 初始化工作空间（嵌套可见性 + 逐模块 source/deb）"
+echo "     默认推荐: ocs2=deb，arms=source，common=source"
+echo "  2) 切换模块安装方式（源码 ↔ deb）"
+echo "  3) 仅安装/更新核心 deb 包（跳过 Git 子模块拉取）"
+echo "  4) 卸载核心 deb 包"
+echo "  5) 仅运行 rosdep 安装依赖（rosdep install --from-paths src --ignore-src -r -y）"
 echo ""
-echo "  --- deb 模式 ---"
-echo "  3) 快速模式：public 仓库 + 核心包 deb 安装（ocs2_ros2、arms_ros2_control、robot-descriptions/common）"
-echo "  4) 仅安装/更新核心 deb 包（跳过 Git 子模块拉取）"
-echo "  5) 卸载核心 deb 包"
-echo ""
-read -rp "请输入选项 [1/2/3/4/5]（默认: 1）: " mode_choice
-case "$mode_choice" in
-    2) INIT_MODE="private"; BUILD_MODE="source" ;;
-    3) INIT_MODE="public"; BUILD_MODE="quick" ;;
-    4) BUILD_MODE="deb_only" ;;
-    5) BUILD_MODE="deb_uninstall" ;;
-    *) INIT_MODE="public"; BUILD_MODE="source" ;;
+read -rp "请输入选项 [1/2/3/4/5]（默认: 1）: " flow_choice
+case "$flow_choice" in
+    2) FLOW="switch" ;;
+    3) FLOW="deb_only" ;;
+    4) FLOW="deb_uninstall" ;;
+    5) FLOW="rosdep" ;;
+    *) FLOW="init" ;;
 esac
 
-if [ "$BUILD_MODE" = "deb_only" ]; then
+# ---------- 快捷：仅 rosdep ----------
+if [ "$FLOW" = "rosdep" ]; then
+    print_info "模式: 仅运行 rosdep"
+    echo ""
+    run_rosdep_install || exit 1
+    exit 0
+fi
+
+# ---------- 快捷：仅 deb / 卸载 ----------
+if [ "$FLOW" = "deb_only" ]; then
+    echo ""
+    echo "选择要安装/更新的包（逗号分隔短名，回车=全部）："
+    echo "  ocs2, common, arms"
+    read -rp "包列表: " only_choice
+    only_choice="$(echo "$only_choice" | tr -d '[:space:]')"
     print_info "模式: 仅安装核心 deb 包（不拉取 Git 子模块）"
     echo ""
-    run_install_core_debs || exit 1
+    run_install_core_debs "$only_choice" || exit 1
     print_info ""
     print_info "完成后请执行: source /opt/ros/jazzy/setup.bash"
     exit 0
 fi
 
-if [ "$BUILD_MODE" = "deb_uninstall" ]; then
+if [ "$FLOW" = "deb_uninstall" ]; then
+    echo ""
+    echo "选择要卸载的包（逗号分隔短名，回车=全部）："
+    echo "  ocs2, common, arms"
+    read -rp "包列表: " only_choice
+    only_choice="$(echo "$only_choice" | tr -d '[:space:]')"
     print_info "模式: 卸载核心 deb 包"
     echo ""
-    run_uninstall_core_debs || exit 1
+    run_uninstall_core_debs "$only_choice" || exit 1
     exit 0
 fi
 
-print_info "初始化模式: $INIT_MODE"
-if [ "$BUILD_MODE" = "quick" ]; then
-    print_info "构建方式: 快速模式（核心包使用 deb，默认从 GitHub 最新 release 安装）"
-else
-    print_info "构建方式: 源码编译"
+# ---------- 可见性 + 模块方式（init / switch 共用提示） ----------
+if [ "$FLOW" = "init" ]; then
+    echo ""
+    echo "嵌套子模块可见性："
+    echo "  1) 仅 public（外部用户，无需私有仓库权限）"
+    echo "  2) 全部（含 private，需要内部仓库访问权限）"
+    read -rp "请输入选项 [1/2]（默认: 1）: " vis_choice
+    case "$vis_choice" in
+        2) INIT_MODE="private" ;;
+        *) INIT_MODE="public" ;;
+    esac
+
+    # 若有上次状态，仅用作模块方式默认值（不覆盖刚选的 INIT_MODE）
+    _def_ocs2=1
+    _def_arms=0
+    _def_common=0
+    if [ -f "$MODE_STATE_FILE" ]; then
+        _def_ocs2="$(grep -E '^USE_DEB_OCS2=' "$MODE_STATE_FILE" 2>/dev/null | cut -d= -f2- || echo 1)"
+        _def_arms="$(grep -E '^USE_DEB_ARMS=' "$MODE_STATE_FILE" 2>/dev/null | cut -d= -f2- || echo 0)"
+        _def_common="$(grep -E '^USE_DEB_COMMON=' "$MODE_STATE_FILE" 2>/dev/null | cut -d= -f2- || echo 0)"
+        [[ "$_def_ocs2" =~ ^[01]$ ]] || _def_ocs2=1
+        [[ "$_def_arms" =~ ^[01]$ ]] || _def_arms=0
+        [[ "$_def_common" =~ ^[01]$ ]] || _def_common=0
+        print_info "检测到上次选择: ocs2=$(mode_label "$_def_ocs2"), arms=$(mode_label "$_def_arms"), common=$(mode_label "$_def_common")"
+    fi
+    USE_DEB_OCS2="$_def_ocs2"
+    USE_DEB_ARMS="$_def_arms"
+    USE_DEB_COMMON="$_def_common"
+
+    echo ""
+    echo "核心模块安装方式（d=deb, s=source，回车用括号内默认）："
+    prompt_sd "  ocs2_ros2              默认 $(mode_label "$USE_DEB_OCS2")" \
+        "$( [ "$USE_DEB_OCS2" -eq 1 ] && echo d || echo s )" USE_DEB_OCS2
+    prompt_sd "  arms_ros2_control      默认 $(mode_label "$USE_DEB_ARMS")" \
+        "$( [ "$USE_DEB_ARMS" -eq 1 ] && echo d || echo s )" USE_DEB_ARMS
+    prompt_sd "  robot-descriptions/common 默认 $(mode_label "$USE_DEB_COMMON")" \
+        "$( [ "$USE_DEB_COMMON" -eq 1 ] && echo d || echo s )" USE_DEB_COMMON
 fi
+
+if [ "$FLOW" = "switch" ]; then
+    # 先读上次可见性，避免覆盖稍后选择的 USE_DEB_*
+    _saved_init="public"
+    if [ -f "$MODE_STATE_FILE" ]; then
+        _saved_init="$(grep -E '^INIT_MODE=' "$MODE_STATE_FILE" 2>/dev/null | cut -d= -f2- || echo public)"
+        [ -z "$_saved_init" ] && _saved_init="public"
+    fi
+
+    echo ""
+    echo "嵌套可见性（切换后初始化源码模块时使用）："
+    echo "  1) public  2) private/全部"
+    read -rp "请输入选项 [1/2]（默认: $([ "$_saved_init" = private ] && echo 2 || echo 1)）: " vis_choice
+    case "$vis_choice" in
+        2) INIT_MODE="private" ;;
+        1) INIT_MODE="public" ;;
+        *) INIT_MODE="$_saved_init" ;;
+    esac
+
+    echo ""
+    echo "当前模块状态："
+    for m in ocs2 arms common; do
+        p="$(module_short_to_path "$m")"
+        pkg="$(module_short_to_deb "$m")"
+        st="$(detect_module_state "$p" "$pkg")"
+        print_info "  $m ($p): $st"
+    done
+    echo ""
+    echo "为每个模块选择目标（s=source, d=deb, k=保持），回车=保持："
+    for m in ocs2 arms common; do
+        p="$(module_short_to_path "$m")"
+        pkg="$(module_short_to_deb "$m")"
+        st="$(detect_module_state "$p" "$pkg")"
+        read -rp "  $m 当前=$st [s/d/K]: " tgt
+        tgt="${tgt:-k}"
+        case "$tgt" in
+            s|S|source)
+                set_use_deb_for_module "$m" 0
+                ;;
+            d|D|deb)
+                set_use_deb_for_module "$m" 1
+                ;;
+            *)
+                case "$st" in
+                    deb) set_use_deb_for_module "$m" 1 ;;
+                    *) set_use_deb_for_module "$m" 0 ;;
+                esac
+                ;;
+        esac
+    done
+fi
+
+# 依赖提示
+if [ "$USE_DEB_ARMS" -eq 1 ] && [ "$USE_DEB_OCS2" -eq 0 ]; then
+    print_warn "arms 选择 deb 而 ocs2 选择 source：arms deb 通常依赖 ocs2 包，安装可能失败。"
+fi
+
+print_info "初始化模式（嵌套）: $INIT_MODE"
+print_info "模块方式: ocs2=$(mode_label "$USE_DEB_OCS2"), arms=$(mode_label "$USE_DEB_ARMS"), common=$(mode_label "$USE_DEB_COMMON")"
 echo ""
 
-# 快速模式下跳过顶层子模块（改由 deb 提供）
-QUICK_SKIP_TOP_SUBMODULES=(
-    "src/arms_ros2_control"
-    "src/ocs2_ros2"
-)
-# 快速模式下跳过嵌套子模块
-QUICK_SKIP_NESTED_PATHS=(
-    "common"
-)
 should_skip_top_submodule() {
     local path="$1"
-    [ "$BUILD_MODE" != "quick" ] && return 1
-    local p
-    for p in "${QUICK_SKIP_TOP_SUBMODULES[@]}"; do
-        [ "$path" = "$p" ] && return 0
-    done
+    case "$path" in
+        src/ocs2_ros2) [ "$USE_DEB_OCS2" -eq 1 ] && return 0 ;;
+        src/arms_ros2_control) [ "$USE_DEB_ARMS" -eq 1 ] && return 0 ;;
+    esac
     return 1
 }
+
 should_skip_nested_path() {
     local relative_path="$1"
-    [ "$BUILD_MODE" != "quick" ] && return 1
-    local p
-    for p in "${QUICK_SKIP_NESTED_PATHS[@]}"; do
-        [ "$relative_path" = "$p" ] && return 0
-    done
+    if [ "$relative_path" = "common" ] && [ "$USE_DEB_COMMON" -eq 1 ]; then
+        return 0
+    fi
     return 1
 }
+
 should_skip_nested_spec() {
     local parent_dir="$1"
     local relative_path="$2"
-    [ "$BUILD_MODE" != "quick" ] && return 1
+    # 父仓本身用 deb 时，其全部嵌套都跳过
     case "$parent_dir" in
-        src/arms_ros2_control|src/ocs2_ros2) return 0 ;;
+        src/arms_ros2_control)
+            [ "$USE_DEB_ARMS" -eq 1 ] && return 0
+            ;;
+        src/ocs2_ros2)
+            [ "$USE_DEB_OCS2" -eq 1 ] && return 0
+            ;;
     esac
     should_skip_nested_path "$relative_path"
 }
 
-# 快速模式：清理此前源码初始化、改由 deb 提供的仓库
-path_has_submodule_content() {
+remove_submodule_path() {
     local path="$1"
-    [ -d "$REPO_DIR/$path" ] || return 1
-    [ -e "$REPO_DIR/$path/.git" ] && return 0
-    [ -n "$(ls -A "$REPO_DIR/$path" 2>/dev/null)" ]
-}
-
-quick_mode_remove_submodule_path() {
-    local path="$1"
-    print_info "清理: $path"
+    print_info "清理源码目录: $path"
 
     case "$path" in
         src/robot-descriptions/common)
@@ -180,47 +435,68 @@ quick_mode_remove_submodule_path() {
     print_info "✓ 已清理 $path"
 }
 
-quick_mode_cleanup_deb_repos() {
+cleanup_deb_module_sources() {
     local paths_to_clean=() p relative_path full_path clean_choice
 
-    for p in "${QUICK_SKIP_TOP_SUBMODULES[@]}"; do
-        path_has_submodule_content "$p" && paths_to_clean+=("$p")
-    done
-    for relative_path in "${QUICK_SKIP_NESTED_PATHS[@]}"; do
-        full_path="src/robot-descriptions/$relative_path"
+    [ "$USE_DEB_OCS2" -eq 1 ] && path_has_submodule_content "src/ocs2_ros2" && \
+        paths_to_clean+=("src/ocs2_ros2")
+    [ "$USE_DEB_ARMS" -eq 1 ] && path_has_submodule_content "src/arms_ros2_control" && \
+        paths_to_clean+=("src/arms_ros2_control")
+    if [ "$USE_DEB_COMMON" -eq 1 ]; then
+        full_path="src/robot-descriptions/common"
         path_has_submodule_content "$full_path" && paths_to_clean+=("$full_path")
-    done
+    fi
 
     if [ ${#paths_to_clean[@]} -eq 0 ]; then
         return 0
     fi
 
-    print_warn "快速模式检测到以下已由源码初始化的目录（将改由 deb 提供）："
+    print_warn "以下目录将改由 deb 提供，检测到已有源码内容："
     for p in "${paths_to_clean[@]}"; do
         print_warn "  - $p"
     done
     read -rp "是否清理上述目录？[Y/n]: " clean_choice
     case "$clean_choice" in
         n|N|no|NO)
-            print_warn "已跳过清理，快速模式将继续（可能仍占用磁盘空间）"
+            print_warn "已跳过清理（可能仍占用磁盘，且可能与 deb 冲突）"
             return 0
             ;;
     esac
 
     for p in "${paths_to_clean[@]}"; do
-        quick_mode_remove_submodule_path "$p"
+        remove_submodule_path "$p"
     done
     echo ""
 }
 
-# 嵌套子模块可见性配置文件（可编辑此文件以调整 public/private）
+# 切换：对目标为 source 但当前是 deb 的模块先卸载 deb
+switch_uninstall_debs_for_source_targets() {
+    local to_uninstall=()
+    local m p pkg st
+    for m in ocs2 arms common; do
+        if [ "$(get_use_deb_for_module "$m")" -eq 0 ]; then
+            pkg="$(module_short_to_deb "$m")"
+            if is_pkg_installed "$pkg"; then
+                to_uninstall+=("$m")
+            fi
+        fi
+    done
+    if [ ${#to_uninstall[@]} -eq 0 ]; then
+        return 0
+    fi
+    local IFS=,
+    local list="${to_uninstall[*]}"
+    print_info "以下模块改为源码，将先卸载对应 deb: $list"
+    run_uninstall_core_debs "$list" || print_warn "部分 deb 卸载失败，继续尝试源码初始化..."
+}
+
+# 嵌套子模块可见性配置文件
 VISIBILITY_CONF="$REPO_DIR/submodules_visibility.conf"
 if [ ! -f "$VISIBILITY_CONF" ]; then
     print_error "未找到配置文件: $VISIBILITY_CONF"
     exit 1
 fi
 trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; echo "${v%"${v##*[![:space:]]}"}"; }
-# 从配置文件加载嵌套子模块列表：格式 父目录|相对路径|public|private
 NESTED_PUBLIC_SPECS=()
 NESTED_PRIVATE_SPECS=()
 while IFS= read -r line || [ -n "$line" ]; do
@@ -243,9 +519,11 @@ done < "$VISIBILITY_CONF"
 print_info "已从 $VISIBILITY_CONF 加载嵌套子模块配置（public: ${#NESTED_PUBLIC_SPECS[@]} 项, private: ${#NESTED_PRIVATE_SPECS[@]} 项）"
 echo ""
 
-if [ "$BUILD_MODE" = "quick" ]; then
-    quick_mode_cleanup_deb_repos
+if [ "$FLOW" = "switch" ]; then
+    switch_uninstall_debs_for_source_targets
 fi
+
+cleanup_deb_module_sources
 
 print_info "开始初始化子模块..."
 
@@ -253,28 +531,22 @@ print_info "开始初始化子模块..."
 print_info "同步子模块配置..."
 git submodule sync
 
-# 初始化顶层子模块（不递归；快速模式跳过由 deb 提供的仓库）
-if [ "$BUILD_MODE" = "quick" ]; then
-    print_info "初始化顶层子模块（快速模式：跳过 ocs2_ros2、arms_ros2_control）..."
-    quick_init_paths=()
-    while IFS= read -r submodule_path; do
-        should_skip_top_submodule "$submodule_path" && continue
-        quick_init_paths+=("$submodule_path")
-    done < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
-    if [ ${#quick_init_paths[@]} -gt 0 ]; then
-        git submodule update --init "${quick_init_paths[@]}"
-    fi
+# 初始化顶层子模块（不递归；deb 模块跳过）
+print_info "初始化顶层子模块（跳过已选 deb 的仓库）..."
+init_paths=()
+while IFS= read -r submodule_path; do
+    should_skip_top_submodule "$submodule_path" && continue
+    init_paths+=("$submodule_path")
+done < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+if [ ${#init_paths[@]} -gt 0 ]; then
+    git submodule update --init "${init_paths[@]}"
 else
-    print_info "初始化所有子模块..."
-    git submodule update --init
+    print_info "无需要初始化的顶层源码子模块"
 fi
 
-# 嵌套子模块的初始化延后到第一层子模块切换分支之后，避免旧提交缺失路径导致 pathspec 报错
-
 # 遍历所有子模块并切换到对应分支
-print_info "将子模块切换到对应分支的最新提交..."
+print_info "将源码子模块切换到对应分支的最新提交..."
 
-# 获取所有子模块路径
 submodule_paths=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
 
 for submodule_path in $submodule_paths; do
@@ -282,69 +554,56 @@ for submodule_path in $submodule_paths; do
         print_info "跳过子模块（deb 安装）: $submodule_path"
         continue
     fi
-    # 获取对应的分支配置
     branch_name=$(git config --file .gitmodules --get "submodule.$submodule_path.branch" || echo "main")
-    
-        if [ -d "$submodule_path" ]; then
+
+    if [ -d "$submodule_path" ]; then
         print_info "处理子模块: $submodule_path -> 分支: $branch_name"
         cd "$submodule_path"
-        
-        # 确保在 git 仓库中（子模块的 .git 可能是文件或目录）
+
         if ! git rev-parse --git-dir > /dev/null 2>&1; then
             print_warn "子模块 $submodule_path 不是有效的 git 仓库，跳过"
             cd "$REPO_DIR"
             continue
         fi
-        
-        # 检查是否有本地修改，如果有则先 stash
+
         if ! git diff-index --quiet HEAD -- 2>/dev/null; then
             print_warn "  检测到本地修改，先暂存..."
             git stash push -m "Auto-stash before branch switch" || print_warn "  暂存失败，尝试重置..."
-            # 如果 stash 失败，尝试重置（丢弃本地修改）
             if ! git diff-index --quiet HEAD -- 2>/dev/null; then
                 print_warn "  暂存失败，重置本地修改..."
                 git reset --hard HEAD || true
             fi
         fi
-        
-        # 获取远程最新更新
+
         print_info "  获取远程更新..."
         git fetch origin || print_warn "  获取远程更新失败，继续..."
-        
-        # 检查远程分支是否存在
+
         if ! git ls-remote --exit-code --heads origin "$branch_name" > /dev/null 2>&1; then
             print_warn "  远程分支 $branch_name 不存在，跳过 $submodule_path"
             cd "$REPO_DIR"
             continue
         fi
-        
-        # 切换到指定分支
-        # 如果当前处于 detached HEAD 状态，先切换到分支
+
         current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
-        
-        # 如果已经在目标分支，跳过切换
+
         if [ "$current_branch" = "$branch_name" ]; then
             print_info "  已在 $branch_name 分支"
         else
             print_info "  从 $current_branch 切换到 $branch_name 分支..."
-            
+
             if [ "$current_branch" = "HEAD" ] || [ -z "$current_branch" ]; then
-                # 处于 detached HEAD 状态，创建或切换到分支
                 if git show-ref --verify --quiet refs/heads/"$branch_name"; then
-                    # 本地分支存在，切换到它
                     if ! git checkout "$branch_name" 2>/dev/null; then
                         print_warn "  切换失败，尝试强制切换..."
                         git checkout -f "$branch_name" || print_error "  无法切换到 $branch_name 分支"
                     fi
                 else
-                    # 创建新的本地分支跟踪远程分支
                     if ! git checkout -b "$branch_name" "origin/$branch_name" 2>/dev/null; then
                         print_warn "  创建分支失败，尝试直接切换..."
                         git checkout "$branch_name" || print_error "  无法创建/切换到 $branch_name 分支"
                     fi
                 fi
             else
-                # 当前在其他分支，切换到目标分支
                 if git show-ref --verify --quiet refs/heads/"$branch_name"; then
                     if ! git checkout "$branch_name" 2>/dev/null; then
                         print_warn "  切换失败，尝试强制切换..."
@@ -356,8 +615,7 @@ for submodule_path in $submodule_paths; do
                     fi
                 fi
             fi
-            
-            # 验证是否成功切换到目标分支
+
             final_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
             if [ "$final_branch" != "$branch_name" ]; then
                 print_error "  切换失败：当前仍在 $final_branch，目标分支是 $branch_name"
@@ -365,11 +623,10 @@ for submodule_path in $submodule_paths; do
                 continue
             fi
         fi
-        
-        # 确保在最新提交
+
         print_info "  更新到最新提交..."
         git pull origin "$branch_name" || print_warn "  拉取更新失败"
-        
+
         cd "$REPO_DIR"
         print_info "✓ $submodule_path 已切换到 $branch_name 分支"
     else
@@ -377,7 +634,7 @@ for submodule_path in $submodule_paths; do
     fi
 done
 
-# 初始化构建所需的嵌套子模块（根据 submodules_visibility.conf）
+# 初始化构建所需的嵌套子模块
 print_info "初始化构建所需的嵌套子模块（根据配置文件）..."
 for spec in "${NESTED_PUBLIC_SPECS[@]}"; do
     parent_dir="${spec%%:*}"
@@ -404,7 +661,6 @@ if [ "$INIT_MODE" = "private" ]; then
     done
 fi
 
-# 将构建所需的嵌套子模块切换到对应分支并更新到最新提交（根据配置文件）
 print_info "将构建所需的嵌套子模块切换到对应分支..."
 nested_specs=("${NESTED_PUBLIC_SPECS[@]}")
 if [ "$INIT_MODE" = "private" ]; then
@@ -434,7 +690,6 @@ for nested_spec in "${nested_specs[@]}"; do
     if git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
         actual_branch="$branch_name"
     else
-        # 配置的分支（如 main）在远程不存在，改用远程默认分支
         actual_branch=$(git ls-remote --symref origin HEAD 2>/dev/null | awk '/^ref: refs\/heads\// {sub(/refs\/heads\//,""); print $2; exit}')
         if [ -z "$actual_branch" ]; then
             print_warn "  远程分支 $branch_name 不存在且无法获取远程默认分支，跳过"
@@ -464,46 +719,45 @@ print_info ""
 print_info "当前子模块状态："
 git submodule status
 
-# 安装 rosdep 依赖（需已安装 ROS 与 rosdep）
+# 安装 rosdep 依赖
 print_info ""
 print_info "安装 rosdep 依赖..."
 if command -v rosdep >/dev/null 2>&1; then
-    if [ "$BUILD_MODE" = "quick" ]; then
-        rosdep_paths=()
-        while IFS= read -r submodule_path; do
-            should_skip_top_submodule "$submodule_path" && continue
-            rosdep_paths+=("$submodule_path")
-        done < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
-        if [ ${#rosdep_paths[@]} -gt 0 ]; then
-            rosdep install --from-paths "${rosdep_paths[@]}" --ignore-src -r -y \
-                || print_warn "rosdep 安装部分依赖失败，可稍后重试或检查 package.xml"
-        fi
-    else
-        rosdep install --from-paths src --ignore-src -r -y \
+    rosdep_paths=()
+    while IFS= read -r submodule_path; do
+        should_skip_top_submodule "$submodule_path" && continue
+        rosdep_paths+=("$submodule_path")
+    done < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+    if [ ${#rosdep_paths[@]} -gt 0 ]; then
+        rosdep install --from-paths "${rosdep_paths[@]}" --ignore-src -r -y \
             || print_warn "rosdep 安装部分依赖失败，可稍后重试或检查 package.xml"
+    else
+        print_info "无源码路径需要 rosdep"
     fi
 else
     print_warn "未找到 rosdep，请先安装 ROS 环境后手动运行："
-    if [ "$BUILD_MODE" = "quick" ]; then
-        print_info "  cd $REPO_DIR && rosdep install --from-paths src/robot-descriptions --ignore-src -r -y"
-    else
-        print_info "  cd $REPO_DIR && rosdep install --from-paths src --ignore-src -r -y"
-    fi
+    print_info "  cd $REPO_DIR && rosdep install --from-paths src --ignore-src -r -y"
 fi
 
-# 快速模式：安装核心 deb 包
-if [ "$BUILD_MODE" = "quick" ]; then
+# 安装选中的 deb 包
+deb_only_list="$(selected_deb_only_list)"
+if [ -n "$deb_only_list" ]; then
     print_info ""
-    run_install_core_debs || print_error "deb 安装失败，请检查 deb_versions.conf 或网络连接"
-    print_info ""
-    print_info "快速模式后续步骤："
-    print_info "  1. source /opt/ros/jazzy/setup.bash"
-    print_info "  2. 仅需编译 robot-descriptions 中的机器人模型包，例如："
-    print_info "     colcon build --packages-up-to <robot>_description --symlink-install"
+    run_install_core_debs "$deb_only_list" || print_error "deb 安装失败，请检查 deb_versions.conf 或网络连接"
 fi
+
+save_module_mode_state
 
 print_info ""
+print_info "后续步骤："
+print_info "  1. source /opt/ros/jazzy/setup.bash"
+if [ "$USE_DEB_OCS2" -eq 1 ] && [ "$USE_DEB_ARMS" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 1 ]; then
+    print_info "  2. 仅需编译 robot-descriptions 中的机器人模型包，例如："
+    print_info "     colcon build --packages-up-to <robot>_description --symlink-install"
+else
+    print_info "  2. 按需 colcon build 编译源码模块"
+fi
+print_info ""
+print_info "如需在源码与 deb 间切换，重新运行 ./init_repo.sh 并选择选项 2"
 print_info "如需更新子模块到最新提交，可以运行："
 print_info "  git submodule update --remote"
-
-
