@@ -2,19 +2,19 @@
 	path = src/arms_ros2_control
 	url = git@github.com:fiveages-sim/arms_ros2_control.git
 	branch = main
-[submodule "src/arx-ros2-control"]
-	path = src/arx-ros2-control
-	url = git@github.com:fiveages-sim/arx-ros2-control.git
-	branch = main
 [submodule "src/ocs2_ros2"]
 	path = src/ocs2_ros2
 	url = git@github.com:legubiao/ocs2_ros2.git
 	branch = ros2
-[submodule "src/robot-descriptions-arx"]
-	path = src/robot-descriptions-arx
-	url = git@github.com:fiveages-sim/robot-descriptions-arx.git
-	branch = main
 [submodule "src/robot-descriptions-common"]
 	path = src/robot-descriptions-common
 	url = git@github.com:fiveages-sim/robot-descriptions-common.git
+	branch = main
+[submodule "src/robot-descriptions-ht"]
+	path = src/robot-descriptions-ht
+	url = git@github.com:fiveages-sim/robot-descriptions-ht.git
+	branch = main
+[submodule "src/ht-ros2-control"]
+	path = src/ht-ros2-control
+	url = git@github.com:fiveages-sim/ht-ros2-control.git
 	branch = main
