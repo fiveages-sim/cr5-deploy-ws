@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 快速启动脚本（ARX ACone Deploy Workspace）
+# 快速启动脚本（Panthera HT Deploy Workspace）
 # - 自动识别当前 workspace 路径（脚本所在目录）
 # - 启动选项参考：README.md
 
@@ -39,7 +39,7 @@ ensure_ros_env() {
 
 menu() {
   echo -e "${BLUE}========================================${NC}" >&2
-  echo -e "${BLUE}  快速启动（ARX ACone Deploy Workspace）${NC}" >&2
+  echo -e "${BLUE}  快速启动（Panthera HT Deploy Workspace）${NC}" >&2
   echo -e "${BLUE}  Workspace: ${WS_DIR}${NC}" >&2
   echo -e "${BLUE}========================================${NC}" >&2
   echo "" >&2
@@ -66,10 +66,12 @@ build_menu() {
 launch_menu() {
   echo "" >&2
   echo "请选择启动项:" >&2
-  echo "  1) 双臂 (ACone)" >&2
+  echo "  1) 单臂 (Single)" >&2
+  echo "  2) 双臂 (Dual)" >&2
+  echo "  3) 手柄遥操作 (Joystick Teleop)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-1]: " choice
+  read -r -p "请输入选项 [0-3]: " choice
   echo "${choice}"
 }
 
@@ -84,73 +86,139 @@ launch_mode_menu() {
   echo "${choice}"
 }
 
-SDK_DIR="${WS_DIR}/src/arx-ros2-control/external/arx5-sdk"
+# Real-hardware HI control mode (passed as xacro_control_mode → robot.xacro control_mode)
+control_mode_menu() {
+  echo "" >&2
+  echo "请选择真机控制模式:" >&2
+  echo "  1) full_control   — OCS2 MIX（位置+速度+力矩+kp/kd）" >&2
+  echo "  2) pd_control     — 位置+力矩，kp/kd" >&2
+  echo "  3) position_velocity — 位置+速度+最大力矩" >&2
+  echo "  0) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [0-3] (默认 1): " choice
+  if [ -z "${choice}" ]; then
+    choice="1"
+  fi
+  echo "${choice}"
+}
 
-build_arx_sdk() {
-  echo -e "${YELLOW}[INFO] 编译 ARX SDK...${NC}"
+# Maps menu choice → control_mode string; empty means back/cancel
+resolve_control_mode() {
+  case "$1" in
+    1) echo "full_control" ;;
+    2) echo "pd_control" ;;
+    3) echo "position_velocity" ;;
+    0) echo "" ;;
+    *) echo "INVALID" ;;
+  esac
+}
 
-  if ! command -v conda >/dev/null 2>&1; then
-    echo -e "${RED}[ERROR] 未找到 conda，请先安装 Anaconda/Miniconda${NC}"
+# Launch ocs2 demo. Args: arm_label type_args...
+# Uses CONTROL_MODE env if set (real only).
+_run_ocs2_demo() {
+  local arm_label="$1"
+  shift
+  local -a extra_args=("$@")
+  local mode_label=""
+
+  ensure_ros_env || exit 1
+
+  if [ -n "${CONTROL_MODE:-}" ]; then
+    extra_args+=("xacro_control_mode:=${CONTROL_MODE}")
+    mode_label="，控制模式=${CONTROL_MODE}"
+  fi
+
+  echo -e "${GREEN}启动${arm_label}${mode_label}...${NC}"
+  ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht "${extra_args[@]}"
+}
+
+_joystick_enumerate_devices() {
+  if ! command -v ros2 >/dev/null 2>&1; then
     return 1
   fi
+  ros2 run joy joy_enumerate_devices 2>/dev/null
+}
 
-  local conda_base
-  conda_base=$(conda info --base 2>/dev/null)
-  # shellcheck disable=SC1090
-  source "${conda_base}/etc/profile.d/conda.sh"
+_joystick_count() {
+  local count
+  count="$(_joystick_enumerate_devices | grep -cE '^[[:space:]]*[0-9]+[[:space:]]*:' 2>/dev/null)" || count=0
+  echo "${count}"
+}
 
-  if ! conda env list | grep -qE "^arx-py312[[:space:]]"; then
-    echo -e "${YELLOW}[INFO] 创建 conda 环境 arx-py312...${NC}"
-    if command -v mamba >/dev/null 2>&1; then
-      mamba env create -f "${SDK_DIR}/conda_environments/py312_environment.yaml" || return 1
+_joystick_first_id() {
+  local device_id
+  device_id="$(_joystick_enumerate_devices | awk -F ':' '/^[[:space:]]*[0-9]+[[:space:]]*:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print $1; exit}')"
+  echo "${device_id:-0}"
+}
+
+_run_joystick_teleop_launch() {
+  local joy_dev="${1:-}"
+  ensure_ros_env || exit 1
+  if [ -z "${joy_dev}" ]; then
+    echo -e "${GREEN}启动手柄遥操作...${NC}"
+    ros2 launch arms_teleop joystick_teleop.launch.py
+  else
+    echo -e "${GREEN}启动手柄遥操作（${joy_dev}）...${NC}"
+    ros2 launch arms_teleop joystick_teleop.launch.py "joy_dev:=${joy_dev}"
+  fi
+}
+
+joystick_device_menu() {
+  local menu_lines
+  echo "" >&2
+  echo "请选择手柄设备:" >&2
+  menu_lines="$(_joystick_enumerate_devices | awk -F ':' '/^[[:space:]]*[0-9]+[[:space:]]*:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $5); printf "  %s) %s\n", $1, $5}')"
+  if [ -n "${menu_lines}" ]; then
+    echo "${menu_lines}" >&2
+  else
+    echo "  0) Joy ID 0 (未枚举到手柄，使用默认 ID)" >&2
+  fi
+  echo "  q) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入 Joy ID (默认: 0，输入 q 返回): " choice
+  if [ -z "${choice}" ]; then
+    choice="0"
+  fi
+  if [ "${choice}" = "q" ] || [ "${choice}" = "Q" ]; then
+    choice="back"
+  fi
+  echo "${choice}"
+}
+
+do_launch_joystick_teleop() {
+  local device_choice device_count device_id
+
+  ensure_ros_env || exit 1
+  device_count="$(_joystick_count)"
+
+  if [ "${device_count}" -eq 1 ]; then
+    device_id="$(_joystick_first_id)"
+    if [ "${device_id}" = "0" ]; then
+      _run_joystick_teleop_launch ""
     else
-      conda env create -f "${SDK_DIR}/conda_environments/py312_environment.yaml" || return 1
+      _run_joystick_teleop_launch "/dev/input/js${device_id}"
     fi
+    return
   fi
 
-  # ── 第一步：系统 GCC 编译 C++ 库，供 ROS2 运行时使用 ─────────────
-  # conda 环境内含 cxx-compiler（GCC 14）和 conda 版 KDL，若在 conda 激活状态下编译
-  # libArxJointController.so，会与 ROS2 运行时的系统 KDL 产生 ABI 不兼容导致 segfault。
-  # 因此必须在系统 GCC（/usr/bin/g++）+ 系统 KDL（ROS2 Jazzy）下单独编译。
-  echo -e "${YELLOW}[INFO] 第一步：使用系统 GCC 编译 libArxJointController.so（供 ROS2 使用）...${NC}"
-  (
-    ros_distro="${ROS_DISTRO:-jazzy}"
-    [ -f "/opt/ros/${ros_distro}/setup.bash" ] && source "/opt/ros/${ros_distro}/setup.bash"
+  device_choice="$(joystick_device_menu)"
 
-    # cmake 配置阶段需要 pybind11（python/CMakeLists.txt 中 REQUIRED），
-    # 但我们只编译 C++ 目标，不实际链接它。从 conda 获取路径仅用于配置通过。
-    pybind11_dir=$(conda run -n arx-py312 python3 -c \
-      "import pybind11; print(pybind11.get_cmake_dir())" 2>/dev/null || true)
-
-    cmake_args=(-DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_C_COMPILER=/usr/bin/gcc)
-    if [ -n "${pybind11_dir}" ]; then
-      cmake_args+=("-Dpybind11_DIR=${pybind11_dir}")
-    fi
-
-    mkdir -p "${SDK_DIR}/build"
-    cd "${SDK_DIR}/build" || exit 1
-    cmake .. "${cmake_args[@]}" || exit 1
-    make -j"$(nproc)" ArxJointController ArxCartesianController || exit 1
-  ) || return 1
-  echo -e "${GREEN}[INFO] 第一步完成：libArxJointController.so 已生成${NC}"
-
-  # ── 第二步：conda 环境编译 Python 绑定 ───────────────────────────
-  # arx5_interface.cpython-312-x86_64-linux-gnu.so 需要 pybind11 和 conda Python，
-  # 输出到 python/ 目录，供独立 Python 脚本调用，与 ROS2 运行时无关。
-  echo -e "${YELLOW}[INFO] 第二步：使用 conda 环境编译 Python 绑定...${NC}"
-  (
-    conda activate arx-py312 || exit 1
-    ros_distro="${ROS_DISTRO:-jazzy}"
-    [ -f "/opt/ros/${ros_distro}/setup.bash" ] && source "/opt/ros/${ros_distro}/setup.bash"
-
-    mkdir -p "${SDK_DIR}/build-conda"
-    cd "${SDK_DIR}/build-conda" || exit 1
-    cmake .. || exit 1
-    make -j"$(nproc)" arx5_interface || exit 1
-  ) || return 1
-  echo -e "${GREEN}[INFO] 第二步完成：arx5_interface Python 绑定已生成${NC}"
-
-  echo -e "${GREEN}ARX SDK 编译完成！${NC}"
+  case "${device_choice}" in
+    back)
+      echo "返回"
+      return
+      ;;
+    0)
+      _run_joystick_teleop_launch ""
+      ;;
+    *)
+      if ! [[ "${device_choice}" =~ ^[0-9]+$ ]]; then
+        echo -e "${YELLOW}无效 Joy ID: ${device_choice}${NC}"
+        exit 1
+      fi
+      _run_joystick_teleop_launch "/dev/input/js${device_choice}"
+      ;;
+  esac
 }
 
 need_cmd git || exit 1
@@ -167,8 +235,7 @@ case "${top_choice}" in
     cd "${WS_DIR}" || exit 1
     colcon build --packages-up-to \
       ocs2_arm_controller \
-      arx_lift2s_description \
-      arx5_description \
+      panthera_ht_description \
       arms_teleop \
       adaptive_gripper_controller \
       basic_joint_controller \
@@ -183,21 +250,19 @@ case "${top_choice}" in
 
       2)
     echo -e "${GREEN}开始编译真机所需包...${NC}"
-    build_arx_sdk || exit 1
     cd "${WS_DIR}" || exit 1
     colcon build --packages-up-to \
-      arx_ros2_control \
+      panthera_ros2_control \
       ocs2_arm_controller \
-      arx_lift2s_description \
-      arx5_description \
+      panthera_ht_description \
       arms_teleop \
       adaptive_gripper_controller \
       basic_joint_controller \
       --symlink-install
     if [ $? -eq 0 ]; then
-      echo -e “${GREEN}编译完成！${NC}”
+      echo -e "${GREEN}编译完成！${NC}"
     else
-      echo -e “${YELLOW}编译过程中出现错误${NC}”
+      echo -e "${YELLOW}编译过程中出现错误${NC}"
       exit 1
     fi
     ;;
@@ -214,18 +279,37 @@ case "${top_choice}" in
   2)
     launch_choice="$(launch_menu)"
     case "${launch_choice}" in
-      1)
+      1|2)
+        arm_label="单臂"
+        type_arg=""
+        if [ "${launch_choice}" = "2" ]; then
+          arm_label="双臂"
+          type_arg="type:=dual"
+        fi
+
         mode_choice="$(launch_mode_menu)"
         case "${mode_choice}" in
           1)
-            echo -e "${GREEN}启动双臂仿真（ACone）...${NC}"
-            ensure_ros_env || exit 1
-            ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_lift2s type:=acone_x5
+            if [ -n "${type_arg}" ]; then
+              _run_ocs2_demo "${arm_label}仿真（Panthera HT）" "${type_arg}"
+            else
+              _run_ocs2_demo "${arm_label}仿真（Panthera HT）"
+            fi
             ;;
           2)
-            echo -e "${GREEN}启动双臂真机（ACone）...${NC}"
-            ensure_ros_env || exit 1
-            ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_lift2s type:=acone_x5 hardware:=real
+            cm_choice="$(control_mode_menu)"
+            CONTROL_MODE="$(resolve_control_mode "${cm_choice}")"
+            if [ "${CONTROL_MODE}" = "INVALID" ]; then
+              echo -e "${YELLOW}无效选项${NC}"
+              exit 1
+            fi
+            if [ -z "${CONTROL_MODE}" ]; then
+              echo "返回"
+            elif [ -n "${type_arg}" ]; then
+              _run_ocs2_demo "${arm_label}真机（Panthera HT）" "${type_arg}" "hardware:=real"
+            else
+              _run_ocs2_demo "${arm_label}真机（Panthera HT）" "hardware:=real"
+            fi
             ;;
           0)
             echo "返回"
@@ -235,6 +319,9 @@ case "${top_choice}" in
             exit 1
             ;;
         esac
+        ;;
+      3)
+        do_launch_joystick_teleop
         ;;
       0)
         echo "返回"

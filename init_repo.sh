@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 第五纪双臂轮式人形机器人W1 ROS2部署工作空间初始化脚本
+# HighTorque Panthera HT ROS2 部署工作空间初始化脚本
 # 功能：自动初始化仓库并将所有子模块切换到对应分支的最新提交
 
 # 不设置 set -e，允许某些命令失败后继续执行
@@ -36,7 +36,7 @@ cd "$REPO_DIR"
 if [ ! -d ".git" ]; then
     print_error "当前目录不是 git 仓库！"
     print_info "请先克隆主仓库："
-    print_info "  git clone git@github.com:fiveages-sim/open-deploy-ws.git open-deploy-ws"
+    print_info "  git clone -b panthera-ht git@github.com:fiveages-sim/open-deploy-ws.git open-deploy-ws-ht"
     exit 1
 fi
 
