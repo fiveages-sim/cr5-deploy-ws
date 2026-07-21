@@ -56,10 +56,11 @@ build_menu() {
   echo "" >&2
   echo "请选择编译目标:" >&2
   echo "  1) 编译仿真所需包 (Build Simulation Packages)" >&2
-  echo "  2) 编译真机所需包 (Build Real Hardware Packages)" >&2
+  echo "  2) 编译 LIFT2S 真机包 (Build LIFT2S Real Hardware — official SDK)" >&2
+  echo "  3) 编译单臂 arx5 真机包 (Build Single-Arm Real Hardware — Stanford SDK)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-2]: " choice
+  read -r -p "请输入选项 [0-3]: " choice
   echo "${choice}"
 }
 
@@ -168,6 +169,7 @@ case "${top_choice}" in
     colcon build --packages-up-to \
       ocs2_arm_controller \
       arx_lift2s_description \
+      component_models \
       arx5_description \
       arms_teleop \
       adaptive_gripper_controller \
@@ -182,7 +184,28 @@ case "${top_choice}" in
     ;;
 
       2)
-    echo -e "${GREEN}开始编译真机所需包...${NC}"
+    echo -e "${GREEN}开始编译 LIFT2S 真机所需包（官方 SDK）...${NC}"
+    cd "${WS_DIR}" || exit 1
+    colcon build --packages-up-to \
+      arxlift2s_ros2_control \
+      ocs2_arm_controller \
+      arx_lift2s_description \
+      component_models \
+      arx5_description \
+      arms_teleop \
+      adaptive_gripper_controller \
+      basic_joint_controller \
+      --symlink-install
+    if [ $? -eq 0 ]; then
+      echo -e "${GREEN}编译完成！${NC}"
+    else
+      echo -e "${YELLOW}编译过程中出现错误${NC}"
+      exit 1
+    fi
+    ;;
+
+      3)
+    echo -e "${GREEN}开始编译单臂 arx5 真机所需包（Stanford SDK）...${NC}"
     build_arx_sdk || exit 1
     cd "${WS_DIR}" || exit 1
     colcon build --packages-up-to \
@@ -195,9 +218,9 @@ case "${top_choice}" in
       basic_joint_controller \
       --symlink-install
     if [ $? -eq 0 ]; then
-      echo -e “${GREEN}编译完成！${NC}”
+      echo -e "${GREEN}编译完成！${NC}"
     else
-      echo -e “${YELLOW}编译过程中出现错误${NC}”
+      echo -e "${YELLOW}编译过程中出现错误${NC}"
       exit 1
     fi
     ;;
@@ -223,9 +246,9 @@ case "${top_choice}" in
             ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_lift2s type:=acone_x5
             ;;
           2)
-            echo -e "${GREEN}启动双臂真机（ACone）...${NC}"
+            echo -e "${GREEN}启动 LIFT2S 真机（官方 SDK + split body）...${NC}"
             ensure_ros_env || exit 1
-            ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_lift2s type:=acone_x5 hardware:=real
+            ros2 launch arx_lift2s_description ocs2_real.launch.py type:=acone_x5 hardware:=real
             ;;
           0)
             echo "返回"

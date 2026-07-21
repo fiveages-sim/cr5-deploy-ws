@@ -85,7 +85,8 @@ chmod +x ./quick_start.sh
 
 - 在菜单中选择 **`1) 编译 (Build)`**
   - **`1) 编译仿真所需包`**：用于仿真/开发（不依赖真机驱动）
-  - **`2) 编译真机所需包`**：用于连接真机（包含 `arx_ros2_control` 等）
+  - **`2) 编译 LIFT2S 真机包`**：官方 SDK（`arxlift2s_ros2_control`，can1/can3/can5）
+  - **`3) 编译单臂 arx5 真机包`**：Stanford arx5-sdk（`arx_ros2_control`，需 conda）
 
 <details>
 <summary><strong>（可选）手动编译命令</strong></summary>
@@ -105,7 +106,21 @@ colcon build --packages-up-to \
 
 ```bash
 cd ~/open-deploy-ws
-# 真机所需包（对应 quick_start.sh -> Build -> Real Hardware Packages）
+# LIFT2S 真机（官方 SDK，对应 quick_start.sh -> Build -> LIFT2S Real Hardware）
+colcon build --packages-up-to \
+  arxlift2s_ros2_control \
+  ocs2_arm_controller \
+  arx_lift2s_description \
+  arx5_description \
+  arms_teleop \
+  adaptive_gripper_controller \
+  basic_joint_controller \
+  --symlink-install
+```
+
+```bash
+cd ~/open-deploy-ws
+# 单臂 arx5 真机（Stanford SDK，需先编译 arx5-sdk）
 colcon build --packages-up-to \
   arx_ros2_control \
   ocs2_arm_controller \
@@ -149,7 +164,7 @@ ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_lift2s type:=acone_x5
 </details>
 
 #### 3.3.3 启动真机的控制
-ARX ACone 通过 CAN 总线连接，无需配置网络 IP。
+LIFT2S 真机通过 CAN 总线连接（left `can1`、right `can3`、lift `can5`），使用官方 SDK 与 split body 控制器架构。
 
 ```bash
 cd ~/open-deploy-ws
@@ -165,15 +180,22 @@ cd ~/open-deploy-ws
 
 ```bash
 source ~/open-deploy-ws/install/setup.bash
-ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_lift2s type:=acone_x5 hardware:=real
+ros2 launch arx_lift2s_description ocs2_real.launch.py type:=acone_x5 hardware:=real
+```
+
+等效命令：
+
+```bash
+ros2 launch ocs2_arm_controller split_body.launch.py \
+  robot:=arx_lift2s type:=acone_x5 hardware:=real enable_body:=true
 ```
 
 </details>
 
 ## 4. 子模块说明
 
-- **arms_ros2_control** - 机械臂通用 ROS2 控制实现
-- **arx-ros2-control** - ARX 机械臂硬件驱动（CAN 总线）
+- **arms_ros2_control** - 机械臂通用 ROS2 控制实现（含 `arxlift2s_ros2_control` 官方 SDK 硬件插件）
+- **arx-ros2-control** - ARX 单臂硬件驱动（Stanford arx5-sdk，CAN 总线）
 - **ocs2_ros2** - OCS2 的 ROS2 版本（MPC 控制框架）
 - **robot-descriptions-arx** - ARX 机械臂描述文件
 - **robot-descriptions-common** - 通用机器人组件（夹爪、相机等）
