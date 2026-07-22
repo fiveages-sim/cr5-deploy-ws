@@ -138,6 +138,47 @@ resolve_control_mode() {
   esac
 }
 
+# Real hardware: check /dev/ttyACM* and grant rw if needed.
+ensure_ttyacm_access() {
+  local devices=()
+  local d
+
+  echo -e "${BLUE}[INFO] 检查电机串口 /dev/ttyACM* ...${NC}"
+  shopt -s nullglob
+  devices=(/dev/ttyACM*)
+  shopt -u nullglob
+
+  if [ ${#devices[@]} -eq 0 ]; then
+    echo -e "${RED}[ERROR] 未找到 /dev/ttyACM* 设备${NC}"
+    echo -e "${YELLOW}      请检查 USB 连接、供电，以及 Panthera.yaml 中 Serial_Type=/dev/ttyACM${NC}"
+    echo -e "${YELLOW}      排查: ls /dev/ttyACM*${NC}"
+    read -r -p "仍要继续启动真机吗？[y/N]: " cont
+    case "${cont}" in
+      y|Y|yes|YES) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+
+  echo -e "${GREEN}[INFO] 发现串口设备:${NC}"
+  for d in "${devices[@]}"; do
+    echo -e "${BLUE}  ${d}${NC}"
+  done
+
+  for d in "${devices[@]}"; do
+    if [ -r "${d}" ] && [ -w "${d}" ]; then
+      continue
+    fi
+    echo -e "${YELLOW}[INFO] ${d} 无读写权限，尝试: sudo chmod a+rw ${d}${NC}"
+    if ! sudo chmod a+rw "${d}"; then
+      echo -e "${RED}[ERROR] 无法设置 ${d} 权限${NC}"
+      return 1
+    fi
+  done
+
+  echo -e "${GREEN}[INFO] 串口权限正常${NC}"
+  return 0
+}
+
 # Launch ocs2 demo. Args: arm_label type_args...
 # Uses CONTROL_MODE env if set (real only).
 _run_ocs2_demo() {
@@ -145,8 +186,16 @@ _run_ocs2_demo() {
   shift
   local -a extra_args=("$@")
   local mode_label=""
+  local arg
 
   ensure_ros_env || exit 1
+
+  for arg in "${extra_args[@]}"; do
+    if [ "${arg}" = "hardware:=real" ]; then
+      ensure_ttyacm_access || exit 1
+      break
+    fi
+  done
 
   if [ -n "${CONTROL_MODE:-}" ]; then
     extra_args+=("xacro_control_mode:=${CONTROL_MODE}")

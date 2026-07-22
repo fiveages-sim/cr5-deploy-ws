@@ -160,6 +160,17 @@ ros2 launch robot_common_launch manipulator.launch.py robot:=panthera_ht
 ros2 launch robot_common_launch manipulator.launch.py robot:=panthera_ht type:=dual
 ```
 
+**双臂间距**：只改一处即可，文件为
+`src/robot-descriptions-ht/panthera_ht_description/xacro/robot.xacro`
+中的 `left_mount_xyz` / `right_mount_xyz`（默认约为 `0 ±0.35 0`，单位 m）。
+姿态用 `left_mount_rpy` / `right_mount_rpy`。
+
+当前 `ocs2_arm_controller` 启动时会从同一份 `xacro/robot.xacro` 生成规划 URDF
+（缓存到 `/tmp/...`）。
+改默认值后重新编译/安装描述包（或 `--symlink-install` 下直接重启 launch）即可对可视化与 OCS2 同时生效。
+日常仿真/真机控制以 xacro 为准。
+更完整说明见 `panthera_ht_description` 子模块 README 的 *Mount parameters* 一节。
+
 #### 3.3.2 启动仿真中的控制
 推荐直接用 `quick_start.sh` 启动（会自动 `source install/setup.bash`，前提是已成功编译生成 `install/`）。
 
@@ -187,6 +198,22 @@ ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=dual
 
 #### 3.3.3 启动真机的控制
 
+**启动真机前先确认电机串口：**
+
+```bash
+# 1) 查看设备是否存在（应列出 /dev/ttyACM0 等）
+ls /dev/ttyACM*
+
+# 2) 若无输出：检查 USB 线、供电与驱动；确认 Panthera.yaml 中 Serial_Type 为 /dev/ttyACM
+# 3) 有设备后赋予当前用户读写权限（每次插拔后可能需重新执行）
+sudo chmod a+rw /dev/ttyACM*
+```
+
+也可将用户加入 `dialout` 组后重新登录，减少反复 `chmod`：
+`sudo usermod -aG dialout $USER`
+
+然后：
+
 ```bash
 cd ~/ht-deploy-ws
 ./quick_start.sh
@@ -201,8 +228,8 @@ cd ~/ht-deploy-ws
 
 ```bash
 source ~/ht-deploy-ws/install/setup.bash
-# 单臂
-ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht hardware:=real
+# 单臂（请显式 type:=single）
+ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=single hardware:=real
 # 双臂
 ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=dual hardware:=real
 ```
