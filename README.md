@@ -22,9 +22,33 @@
 ### 初始化并更新子模块
 
 ```bash
-  # 运行初始化脚本，自动将所有子模块切换到对应分支的最新提交
   cd ~/ht-deploy-ws
   ./init_repo.sh
+```
+
+**`init_repo.sh` 支持核心包 deb 安装（推荐）：**
+
+| 选项 | 说明 |
+|------|------|
+| 1) 初始化 | 逐模块选择 source/deb；**默认 ocs2/arms/common=deb**，HT 描述与驱动仍源码 |
+| 2) 切换 | 在源码与 deb 之间切换（会清理冲突目录或卸载 deb） |
+| 3) 仅 deb | 只安装/更新核心 deb，不拉 Git 子模块 |
+| 4) 卸载 deb | 卸载核心 deb 包 |
+| 5) rosdep | 仅对源码子模块路径运行 rosdep |
+
+deb 配置见 [`deb_versions.conf`](deb_versions.conf)。也可直接运行：
+
+```bash
+./scripts/install_core_debs.sh          # 安装全部核心 deb
+./scripts/install_core_debs.sh --only ocs2,common,arms
+```
+
+**deb 模式下的典型流程：**
+
+```bash
+./init_repo.sh                    # 三核心选 deb，只 clone HT 两个仓
+source /opt/ros/jazzy/setup.bash
+./quick_start.sh                  # 编译仿真所需包（仅 HT 相关少量包）
 ```
 
 ### 之后如何更新子模块
@@ -34,12 +58,19 @@ git submodule update --remote
 
 ### 目录结构（节选）
 ```
-src/
-  ├─ arms_ros2_control              # 子模块（分支：main）
-  ├─ ht-ros2-control                 # 子模块（分支：main，panthera_ros2_control 硬件接口）
-  ├─ ocs2_ros2                      # 子模块（分支：ros2，包含嵌套子模块）
-  ├─ robot-descriptions-ht          # 子模块（分支：main，含 panthera_ht_description）
-  └─ robot-descriptions-common      # 子模块（分支：main）
+open-deploy-ws-ht/
+├── scripts/
+│   ├── install_core_debs.sh      # 从 GitHub Release 安装核心 deb
+│   └── uninstall_core_debs.sh
+├── deb_versions.conf             # deb 包版本与仓库映射
+├── init_repo.sh                  # 初始化（支持 source/deb 混合）
+├── quick_start.sh                # 编译与启动
+└── src/
+    ├─ arms_ros2_control          # 子模块（deb 模式下可跳过）
+    ├─ ht-ros2-control            # 子模块（始终源码，真机驱动）
+    ├─ ocs2_ros2                  # 子模块（deb 模式下可跳过）
+    ├─ robot-descriptions-ht      # 子模块（始终源码，HT 模型）
+    └─ robot-descriptions-common  # 子模块（deb 模式下可跳过）
 ```
 
 ### 常见问题

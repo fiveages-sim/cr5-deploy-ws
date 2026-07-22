@@ -13,25 +13,50 @@ NC='\033[0m' # No Color
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-need_cmd() {
-  local cmd="$1"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo -e "${RED}[ERROR] 缺少命令：$cmd${NC}"
-    return 1
+# 核心包由 deb 提供时，src 下无 arms_ros2_control / ocs2_ros2 等
+core_deb_mode() {
+  if dpkg-query -W -f='${Status}' ros-jazzy-arms-ros2-control 2>/dev/null | grep -q "install ok installed"; then
+    return 0
   fi
-  return 0
+  [ ! -d "${WS_DIR}/src/arms_ros2_control" ] && [ ! -d "${WS_DIR}/src/ocs2_ros2" ]
 }
 
-ensure_ros_env() {
-  # 启动类命令需要 ROS 环境
+source_ros_underlay() {
+  if [ -f /opt/ros/jazzy/setup.bash ]; then
+    # shellcheck disable=SC1091
+    source /opt/ros/jazzy/setup.bash
+    return 0
+  fi
+  echo -e "${YELLOW}[WARN] 未找到 /opt/ros/jazzy/setup.bash${NC}"
+  return 1
+}
+
+source_workspace_env() {
+  source_ros_underlay || return 1
   if [ -f "${WS_DIR}/install/setup.bash" ]; then
     # shellcheck disable=SC1090
     source "${WS_DIR}/install/setup.bash"
+    echo -e "${GREEN}[INFO] 已 source 环境:${NC}"
+    echo -e "${BLUE}  /opt/ros/jazzy/setup.bash${NC}"
+    echo -e "${BLUE}  ${WS_DIR}/install/setup.bash${NC}"
+    return 0
+  fi
+  echo -e "${YELLOW}[WARN] 未找到 ${WS_DIR}/install/setup.bash${NC}"
+  return 1
+}
+
+ensure_ros_env() {
+  if source_workspace_env; then
     return 0
   fi
 
-  echo -e "${YELLOW}[WARN] 未找到 ${WS_DIR}/install/setup.bash${NC}"
-  echo -e "${YELLOW}      请先在此 workspace 编译，然后再运行启动选项：${NC}"
+  if core_deb_mode; then
+    echo -e "${YELLOW}[WARN] deb 已提供核心控制包；请先编译 HT 包：${NC}"
+    echo -e "${YELLOW}      ./quick_start.sh → 1) 编译${NC}"
+    return 1
+  fi
+
+  echo -e "${YELLOW}[WARN] 请先在此 workspace 编译，然后再运行启动选项：${NC}"
   echo -e "${YELLOW}      cd ${WS_DIR} && colcon build --symlink-install${NC}"
   return 1
 }
@@ -221,7 +246,20 @@ do_launch_joystick_teleop() {
   esac
 }
 
-need_cmd git || exit 1
+need_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo -e "${RED}[ERROR] 缺少命令：$cmd${NC}"
+    return 1
+  fi
+  return 0
+}
+
+run_colcon_build() {
+  cd "${WS_DIR}" || exit 1
+  source_ros_underlay
+  colcon build "$@"
+}
 need_cmd colcon || echo -e "${YELLOW}[WARN] 未找到 colcon，编译选项会失败（通常需要安装 ROS 发行版环境）。${NC}"
 
 top_choice="$(menu)"
@@ -232,39 +270,51 @@ case "${top_choice}" in
     case "${build_choice}" in
       1)
     echo -e "${GREEN}开始编译仿真所需包...${NC}"
-    cd "${WS_DIR}" || exit 1
-    colcon build --packages-up-to \
-      ocs2_arm_controller \
-      panthera_ht_description \
-      arms_teleop \
-      adaptive_gripper_controller \
-      basic_joint_controller \
-      --symlink-install
-    if [ $? -eq 0 ]; then
-      echo -e "${GREEN}编译完成！${NC}"
+    if core_deb_mode; then
+      echo -e "${BLUE}  模式: 核心包 deb + 仅编译 HT 描述包${NC}"
+      if ! run_colcon_build --packages-select panthera_ht_description --symlink-install; then
+        echo -e "${YELLOW}编译过程中出现错误${NC}"
+        exit 1
+      fi
     else
-      echo -e "${YELLOW}编译过程中出现错误${NC}"
-      exit 1
+      if ! run_colcon_build --packages-up-to \
+        ocs2_arm_controller \
+        panthera_ht_description \
+        arms_teleop \
+        adaptive_gripper_controller \
+        basic_joint_controller \
+        --symlink-install; then
+        echo -e "${YELLOW}编译过程中出现错误${NC}"
+        exit 1
+      fi
     fi
+    echo -e "${GREEN}编译完成！${NC}"
+    source_workspace_env || echo -e "${YELLOW}[WARN] workspace overlay 未加载，请检查 install/setup.bash${NC}"
     ;;
 
       2)
     echo -e "${GREEN}开始编译真机所需包...${NC}"
-    cd "${WS_DIR}" || exit 1
-    colcon build --packages-up-to \
-      panthera_ros2_control \
-      ocs2_arm_controller \
-      panthera_ht_description \
-      arms_teleop \
-      adaptive_gripper_controller \
-      basic_joint_controller \
-      --symlink-install
-    if [ $? -eq 0 ]; then
-      echo -e "${GREEN}编译完成！${NC}"
+    if core_deb_mode; then
+      echo -e "${BLUE}  模式: 核心包 deb + 编译 HT 描述与真机驱动${NC}"
+      if ! run_colcon_build --packages-select panthera_ht_description panthera_ros2_control --symlink-install; then
+        echo -e "${YELLOW}编译过程中出现错误${NC}"
+        exit 1
+      fi
     else
-      echo -e "${YELLOW}编译过程中出现错误${NC}"
-      exit 1
+      if ! run_colcon_build --packages-up-to \
+        panthera_ros2_control \
+        ocs2_arm_controller \
+        panthera_ht_description \
+        arms_teleop \
+        adaptive_gripper_controller \
+        basic_joint_controller \
+        --symlink-install; then
+        echo -e "${YELLOW}编译过程中出现错误${NC}"
+        exit 1
+      fi
     fi
+    echo -e "${GREEN}编译完成！${NC}"
+    source_workspace_env || echo -e "${YELLOW}[WARN] workspace overlay 未加载，请检查 install/setup.bash${NC}"
     ;;
       0)
         echo "返回"
@@ -281,7 +331,9 @@ case "${top_choice}" in
     case "${launch_choice}" in
       1|2)
         arm_label="单臂"
-        type_arg=""
+        # panthera_ht xacro 用 type=single 表示单臂；若不传 type，robot_common_launch
+        # 会把 OCS2 planning URDF 默认成 dual（14 DOF），与 6 关节控制器不匹配。
+        type_arg="type:=single"
         if [ "${launch_choice}" = "2" ]; then
           arm_label="双臂"
           type_arg="type:=dual"
@@ -290,11 +342,7 @@ case "${top_choice}" in
         mode_choice="$(launch_mode_menu)"
         case "${mode_choice}" in
           1)
-            if [ -n "${type_arg}" ]; then
-              _run_ocs2_demo "${arm_label}仿真（Panthera HT）" "${type_arg}"
-            else
-              _run_ocs2_demo "${arm_label}仿真（Panthera HT）"
-            fi
+            _run_ocs2_demo "${arm_label}仿真（Panthera HT）" "${type_arg}"
             ;;
           2)
             cm_choice="$(control_mode_menu)"
@@ -305,10 +353,8 @@ case "${top_choice}" in
             fi
             if [ -z "${CONTROL_MODE}" ]; then
               echo "返回"
-            elif [ -n "${type_arg}" ]; then
-              _run_ocs2_demo "${arm_label}真机（Panthera HT）" "${type_arg}" "hardware:=real"
             else
-              _run_ocs2_demo "${arm_label}真机（Panthera HT）" "hardware:=real"
+              _run_ocs2_demo "${arm_label}真机（Panthera HT）" "${type_arg}" "hardware:=real"
             fi
             ;;
           0)
