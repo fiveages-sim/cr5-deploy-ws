@@ -96,6 +96,7 @@ cd ~/open-deploy-ws
 # 仿真所需包（对应 quick_start.sh -> Build -> Simulation Packages）
 colcon build --packages-up-to \
   ocs2_arm_controller \
+  arx_acone_description \
   arx_lift2s_description \
   arx5_description \
   arms_teleop \
@@ -110,6 +111,7 @@ cd ~/open-deploy-ws
 colcon build --packages-up-to \
   arxlift2s_ros2_control \
   ocs2_arm_controller \
+  arx_acone_description \
   arx_lift2s_description \
   arx5_description \
   arms_teleop \
@@ -124,6 +126,7 @@ cd ~/open-deploy-ws
 colcon build --packages-up-to \
   arx_ros2_control \
   ocs2_arm_controller \
+  arx_acone_description \
   arx_lift2s_description \
   arx5_description \
   arms_teleop \
@@ -138,7 +141,10 @@ colcon build --packages-up-to \
 #### 3.3.1 模型可视化
 ```bash
 source ~/open-deploy-ws/install/setup.bash
-ros2 launch robot_common_launch manipulator.launch.py robot:=arx_lift2s type:=acone_x5
+# 仅双臂 AC One
+ros2 launch robot_common_launch manipulator.launch.py robot:=arx_acone
+# 完整 Lift2S（底盘 + 升降 + AC One）
+ros2 launch robot_common_launch manipulator.launch.py robot:=arx_lift2s
 ```
 
 #### 3.3.2 启动仿真中的控制
@@ -150,44 +156,56 @@ cd ~/open-deploy-ws
 ```
 
 - 选择 **`2) 启动 (Launch)`**
-  - 选择 **`1) 双臂 (ACone)`**
-  - 选择 **`1) 仿真 (Simulation / mock_components)`**
+  - **`1) 单臂 X5`**：`robot:=arx5`
+  - **`2) 双臂 ACone`**：仅双臂
+  - **`3) Lift2S 分体`**：双臂 OCS2 + 升降 BasicJoint（规划 URDF 来自 `arx_acone`）
+  - **`4) Lift2S 全身`**：升降 + 双臂同一 OCS2
+
+运行模式与 `fa_w2_ws` 对齐：真机 / 真机 headless / 仿真 / 仿真 headless / Isaac / Isaac headless / 仅可视化。
 
 <details>
 <summary><strong>（可选）手动启动仿真控制</strong></summary>
 
 ```bash
 source ~/open-deploy-ws/install/setup.bash
-ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_lift2s type:=acone_x5
+# 单臂 X5
+ros2 launch ocs2_arm_controller demo.launch.py robot:=arx5
+# 仅双臂
+ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_acone
+# Lift2S 分体
+ros2 launch ocs2_arm_controller split_body.launch.py robot:=arx_lift2s
+# Lift2S 全身
+ros2 launch ocs2_arm_controller full_body.launch.py robot:=arx_lift2s
+# Isaac / headless 示例
+ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_acone hardware:=isaac
+ros2 launch ocs2_arm_controller split_body.launch.py robot:=arx_lift2s hardware:=isaac launch_mode:=control_only
 ```
 
 </details>
 
 #### 3.3.3 启动真机的控制
-LIFT2S 真机通过 CAN 总线连接（left `can1`、right `can3`、lift `can5`），使用官方 SDK 与 split body 控制器架构。
+LIFT2S 真机通过 CAN 总线连接（left `can1`、right `can3`、lift `can5`），使用官方 SDK。分体/全身与 W2 相同，分别走 `split_body` / `full_body`。
 
 ```bash
 cd ~/open-deploy-ws
 ./quick_start.sh
 ```
 
-- 选择 **`2) 启动 (Launch)`**
-  - 选择 **`1) 双臂 (ACone)`**
-  - 选择 **`2) 真机 (Real Hardware)`**
-
 <details>
 <summary><strong>（可选）手动启动真机控制</strong></summary>
 
 ```bash
 source ~/open-deploy-ws/install/setup.bash
-ros2 launch arx_lift2s_description ocs2_real.launch.py type:=acone_x5 hardware:=real
-```
-
-等效命令：
-
-```bash
-ros2 launch ocs2_arm_controller split_body.launch.py \
-  robot:=arx_lift2s type:=acone_x5 hardware:=real enable_body:=true
+# 单臂 X5（Stanford SDK）
+ros2 launch ocs2_arm_controller demo.launch.py robot:=arx5 hardware:=real
+# 仅双臂（官方 SDK）
+ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_acone hardware:=real
+# Lift2S 分体（臂 + 升降分开）
+ros2 launch ocs2_arm_controller split_body.launch.py robot:=arx_lift2s hardware:=real
+# Lift2S 全身
+ros2 launch ocs2_arm_controller full_body.launch.py robot:=arx_lift2s hardware:=real
+# headless
+ros2 launch ocs2_arm_controller split_body.launch.py robot:=arx_lift2s hardware:=real launch_mode:=control_only
 ```
 
 </details>

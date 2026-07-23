@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-# 快速启动脚本（ARX ACone Deploy Workspace）
+# 快速启动脚本（ARX ACone / Lift2S Deploy Workspace）
 # - 自动识别当前 workspace 路径（脚本所在目录）
-# - 启动选项参考：README.md
+# - 运行模式与 fa_w2_ws 对齐：真机 / 仿真 / Isaac / headless / 仅可视化
 
 # 颜色定义
 GREEN='\033[0;32m'
@@ -12,6 +12,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SDK_DIR="${WS_DIR}/src/arx-ros2-control/external/arx5-sdk"
 
 need_cmd() {
   local cmd="$1"
@@ -23,7 +24,6 @@ need_cmd() {
 }
 
 ensure_ros_env() {
-  # 启动类命令需要 ROS 环境
   if [ -f "${WS_DIR}/install/setup.bash" ]; then
     # shellcheck disable=SC1090
     source "${WS_DIR}/install/setup.bash"
@@ -36,6 +36,71 @@ ensure_ros_env() {
   return 1
 }
 
+# 通用启动：对齐 fa_w2_ws
+# $1=描述 $2=launch 文件 $3=基础参数 $4=(可选)硬件覆盖 $5=(可选)预选运行模式
+do_launch() {
+  local description="$1"
+  local launch_file="$2"
+  local base_args="$3"
+  local hardware_override="${4:-}"
+  local mode_choice="${5:-}"
+
+  if [ -z "${mode_choice}" ]; then
+    mode_choice="$(launch_mode_menu)"
+  fi
+
+  case "${mode_choice}" in
+    1)
+      echo -e "${GREEN}启动${description}（真机）...${NC}"
+      ensure_ros_env || exit 1
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} hardware:=${hardware_override:-real}
+      ;;
+    2)
+      echo -e "${GREEN}启动${description}（真机 headless）...${NC}"
+      ensure_ros_env || exit 1
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} hardware:=${hardware_override:-real} launch_mode:=control_only
+      ;;
+    3)
+      echo -e "${GREEN}启动${description}（仿真）...${NC}"
+      ensure_ros_env || exit 1
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} hardware:=mock_components
+      ;;
+    4)
+      echo -e "${GREEN}启动${description}（仿真 headless）...${NC}"
+      ensure_ros_env || exit 1
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} hardware:=mock_components launch_mode:=control_only
+      ;;
+    5)
+      echo -e "${GREEN}启动${description}（Isaac）...${NC}"
+      ensure_ros_env || exit 1
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} hardware:=isaac
+      ;;
+    6)
+      echo -e "${GREEN}启动${description}（Isaac headless）...${NC}"
+      ensure_ros_env || exit 1
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} hardware:=isaac launch_mode:=control_only
+      ;;
+    7)
+      echo -e "${GREEN}启动${description}（仅可视化）...${NC}"
+      ensure_ros_env || exit 1
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} launch_mode:=rviz_only
+      ;;
+    0)
+      echo "返回"
+      ;;
+    *)
+      echo -e "${YELLOW}无效选项${NC}"
+      exit 1
+      ;;
+  esac
+}
 
 menu() {
   echo -e "${BLUE}========================================${NC}" >&2
@@ -67,25 +132,32 @@ build_menu() {
 launch_menu() {
   echo "" >&2
   echo "请选择启动项:" >&2
-  echo "  1) 双臂 (ACone)" >&2
+  echo "  1) 单臂 X5 (demo)" >&2
+  echo "  2) 双臂 ACone (demo)" >&2
+  echo "  3) Lift2S 分体控制 (split_body)" >&2
+  echo "  4) Lift2S 全身控制 (full_body)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-1]: " choice
+  read -r -p "请输入选项 [0-4]: " choice
   echo "${choice}"
 }
 
+# 与 fa_w2_ws 对齐的运行模式菜单
 launch_mode_menu() {
   echo "" >&2
   echo "请选择运行模式:" >&2
-  echo "  1) 仿真 (Simulation / mock_components)" >&2
-  echo "  2) 真机 (Real Hardware)" >&2
+  echo "  1) 真机启动 (Real Hardware)" >&2
+  echo "  2) 真机 headless 模式启动 (Real Hardware, No RViz)" >&2
+  echo "  3) 仿真启动 (Simulation / mock_components)" >&2
+  echo "  4) 仿真 headless 模式启动 (mock_components, No RViz)" >&2
+  echo "  5) Isaac 仿真启动 (hardware:=isaac)" >&2
+  echo "  6) Isaac 仿真 headless 启动 (hardware:=isaac, control_only)" >&2
+  echo "  7) 仅可视化模式启动 (Visualization Only / rviz_only)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-2]: " choice
+  read -r -p "请输入选项 [0-7]: " choice
   echo "${choice}"
 }
-
-SDK_DIR="${WS_DIR}/src/arx-ros2-control/external/arx5-sdk"
 
 build_arx_sdk() {
   echo -e "${YELLOW}[INFO] 编译 ARX SDK...${NC}"
@@ -110,16 +182,11 @@ build_arx_sdk() {
   fi
 
   # ── 第一步：系统 GCC 编译 C++ 库，供 ROS2 运行时使用 ─────────────
-  # conda 环境内含 cxx-compiler（GCC 14）和 conda 版 KDL，若在 conda 激活状态下编译
-  # libArxJointController.so，会与 ROS2 运行时的系统 KDL 产生 ABI 不兼容导致 segfault。
-  # 因此必须在系统 GCC（/usr/bin/g++）+ 系统 KDL（ROS2 Jazzy）下单独编译。
   echo -e "${YELLOW}[INFO] 第一步：使用系统 GCC 编译 libArxJointController.so（供 ROS2 使用）...${NC}"
   (
     ros_distro="${ROS_DISTRO:-jazzy}"
     [ -f "/opt/ros/${ros_distro}/setup.bash" ] && source "/opt/ros/${ros_distro}/setup.bash"
 
-    # cmake 配置阶段需要 pybind11（python/CMakeLists.txt 中 REQUIRED），
-    # 但我们只编译 C++ 目标，不实际链接它。从 conda 获取路径仅用于配置通过。
     pybind11_dir=$(conda run -n arx-py312 python3 -c \
       "import pybind11; print(pybind11.get_cmake_dir())" 2>/dev/null || true)
 
@@ -136,8 +203,6 @@ build_arx_sdk() {
   echo -e "${GREEN}[INFO] 第一步完成：libArxJointController.so 已生成${NC}"
 
   # ── 第二步：conda 环境编译 Python 绑定 ───────────────────────────
-  # arx5_interface.cpython-312-x86_64-linux-gnu.so 需要 pybind11 和 conda Python，
-  # 输出到 python/ 目录，供独立 Python 脚本调用，与 ROS2 运行时无关。
   echo -e "${YELLOW}[INFO] 第二步：使用 conda 环境编译 Python 绑定...${NC}"
   (
     conda activate arx-py312 || exit 1
@@ -164,66 +229,67 @@ case "${top_choice}" in
     build_choice="$(build_menu)"
     case "${build_choice}" in
       1)
-    echo -e "${GREEN}开始编译仿真所需包...${NC}"
-    cd "${WS_DIR}" || exit 1
-    colcon build --packages-up-to \
-      ocs2_arm_controller \
-      arx_lift2s_description \
-      component_models \
-      arx5_description \
-      arms_teleop \
-      adaptive_gripper_controller \
-      basic_joint_controller \
-      --symlink-install
-    if [ $? -eq 0 ]; then
-      echo -e "${GREEN}编译完成！${NC}"
-    else
-      echo -e "${YELLOW}编译过程中出现错误${NC}"
-      exit 1
-    fi
-    ;;
-
+        echo -e "${GREEN}开始编译仿真所需包...${NC}"
+        cd "${WS_DIR}" || exit 1
+        colcon build --packages-up-to \
+          ocs2_arm_controller \
+          arx_acone_description \
+          arx_lift2s_description \
+          component_models \
+          arx5_description \
+          arms_teleop \
+          adaptive_gripper_controller \
+          basic_joint_controller \
+          --symlink-install
+        if [ $? -eq 0 ]; then
+          echo -e "${GREEN}编译完成！${NC}"
+        else
+          echo -e "${YELLOW}编译过程中出现错误${NC}"
+          exit 1
+        fi
+        ;;
       2)
-    echo -e "${GREEN}开始编译 LIFT2S 真机所需包（官方 SDK）...${NC}"
-    cd "${WS_DIR}" || exit 1
-    colcon build --packages-up-to \
-      arxlift2s_ros2_control \
-      ocs2_arm_controller \
-      arx_lift2s_description \
-      component_models \
-      arx5_description \
-      arms_teleop \
-      adaptive_gripper_controller \
-      basic_joint_controller \
-      --symlink-install
-    if [ $? -eq 0 ]; then
-      echo -e "${GREEN}编译完成！${NC}"
-    else
-      echo -e "${YELLOW}编译过程中出现错误${NC}"
-      exit 1
-    fi
-    ;;
-
+        echo -e "${GREEN}开始编译 LIFT2S 真机所需包（官方 SDK）...${NC}"
+        cd "${WS_DIR}" || exit 1
+        colcon build --packages-up-to \
+          arxlift2s_ros2_control \
+          ocs2_arm_controller \
+          arx_acone_description \
+          arx_lift2s_description \
+          component_models \
+          arx5_description \
+          arms_teleop \
+          adaptive_gripper_controller \
+          basic_joint_controller \
+          --symlink-install
+        if [ $? -eq 0 ]; then
+          echo -e "${GREEN}编译完成！${NC}"
+        else
+          echo -e "${YELLOW}编译过程中出现错误${NC}"
+          exit 1
+        fi
+        ;;
       3)
-    echo -e "${GREEN}开始编译单臂 arx5 真机所需包（Stanford SDK）...${NC}"
-    build_arx_sdk || exit 1
-    cd "${WS_DIR}" || exit 1
-    colcon build --packages-up-to \
-      arx_ros2_control \
-      ocs2_arm_controller \
-      arx_lift2s_description \
-      arx5_description \
-      arms_teleop \
-      adaptive_gripper_controller \
-      basic_joint_controller \
-      --symlink-install
-    if [ $? -eq 0 ]; then
-      echo -e "${GREEN}编译完成！${NC}"
-    else
-      echo -e "${YELLOW}编译过程中出现错误${NC}"
-      exit 1
-    fi
-    ;;
+        echo -e "${GREEN}开始编译单臂 arx5 真机所需包（Stanford SDK）...${NC}"
+        build_arx_sdk || exit 1
+        cd "${WS_DIR}" || exit 1
+        colcon build --packages-up-to \
+          arx_ros2_control \
+          ocs2_arm_controller \
+          arx_acone_description \
+          arx_lift2s_description \
+          arx5_description \
+          arms_teleop \
+          adaptive_gripper_controller \
+          basic_joint_controller \
+          --symlink-install
+        if [ $? -eq 0 ]; then
+          echo -e "${GREEN}编译完成！${NC}"
+        else
+          echo -e "${YELLOW}编译过程中出现错误${NC}"
+          exit 1
+        fi
+        ;;
       0)
         echo "返回"
         ;;
@@ -238,26 +304,16 @@ case "${top_choice}" in
     launch_choice="$(launch_menu)"
     case "${launch_choice}" in
       1)
-        mode_choice="$(launch_mode_menu)"
-        case "${mode_choice}" in
-          1)
-            echo -e "${GREEN}启动双臂仿真（ACone）...${NC}"
-            ensure_ros_env || exit 1
-            ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_lift2s type:=acone_x5
-            ;;
-          2)
-            echo -e "${GREEN}启动 LIFT2S 真机（官方 SDK + split body）...${NC}"
-            ensure_ros_env || exit 1
-            ros2 launch arx_lift2s_description ocs2_real.launch.py type:=acone_x5 hardware:=real
-            ;;
-          0)
-            echo "返回"
-            ;;
-          *)
-            echo -e "${YELLOW}无效选项${NC}"
-            exit 1
-            ;;
-        esac
+        do_launch "单臂 X5" "ocs2_arm_controller demo.launch.py" "robot:=arx5"
+        ;;
+      2)
+        do_launch "双臂 ACone" "ocs2_arm_controller demo.launch.py" "robot:=arx_acone"
+        ;;
+      3)
+        do_launch "Lift2S 分体控制" "ocs2_arm_controller split_body.launch.py" "robot:=arx_lift2s"
+        ;;
+      4)
+        do_launch "Lift2S 全身控制" "ocs2_arm_controller full_body.launch.py" "robot:=arx_lift2s"
         ;;
       0)
         echo "返回"
