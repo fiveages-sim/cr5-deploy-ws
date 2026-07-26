@@ -122,7 +122,7 @@ build_menu() {
   echo "请选择编译目标:" >&2
   echo "  1) 编译仿真所需包 (Build Simulation Packages)" >&2
   echo "  2) 编译 LIFT2S 真机包 (Build LIFT2S Real Hardware — official SDK)" >&2
-  echo "  3) 编译单臂 arx5 真机包 (Build Single-Arm Real Hardware — Stanford SDK)" >&2
+  echo "  3) 编译单/双臂真机包 (Stanford arx_ros2_control — arx5 / arx_acone)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
   read -r -p "请输入选项 [0-3]: " choice
@@ -270,7 +270,7 @@ case "${top_choice}" in
         fi
         ;;
       3)
-        echo -e "${GREEN}开始编译单臂 arx5 真机所需包（Stanford SDK）...${NC}"
+        echo -e "${GREEN}开始编译单/双臂真机所需包（Stanford SDK：arx5 / arx_acone）...${NC}"
         build_arx_sdk || exit 1
         cd "${WS_DIR}" || exit 1
         colcon build --packages-up-to \
