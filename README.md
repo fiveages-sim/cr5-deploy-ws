@@ -156,12 +156,13 @@ cd ~/open-deploy-ws
 ```
 
 - 选择 **`2) 启动 (Launch)`**
-  - **`1) 单臂 X5`**：`robot:=arx5`
-  - **`2) 双臂 ACone`**：仅双臂
+  - **`1) 单臂 X5`**：Stanford 仿真 / 真机（真机时询问 `full_control` / `position`）
+  - **`2) 双臂 ACone`**：Stanford 仿真 / 真机（同上，can1/can3）
   - **`3) Lift2S 分体`**：双臂 OCS2 + 升降 BasicJoint（规划 URDF 来自 `arx_acone`）
   - **`4) Lift2S 全身`**：升降 + 双臂同一 OCS2
 
-运行模式与 `fa_w2_ws` 对齐：真机 / 真机 headless / 仿真 / 仿真 headless / Isaac / Isaac headless / 仅可视化。
+运行模式与 `fa_w2_ws` 对齐：真机 / 真机 headless / 仿真 / 仿真 headless / Isaac / Isaac headless / 仅可视化。  
+单臂 / 双臂选真机时，会再询问控制模式（默认 `full_control`；`position` / `pd_control` 为真机位置环）。Lift2S 不询问该菜单。
 
 <details>
 <summary><strong>（可选）手动启动仿真控制</strong></summary>
@@ -184,12 +185,14 @@ ros2 launch ocs2_arm_controller split_body.launch.py robot:=arx_lift2s hardware:
 </details>
 
 #### 3.3.3 启动真机的控制
-- **单臂 / 双臂 AC One**：Stanford `arx_ros2_control`，默认 `control_mode:=full_control`（OCS2 MIX）。
-- **Lift2S**：官方 `arxlift2s_ros2_control`（left `can1`、right `can3`、lift `can5`），暂无 MIX。
+- **单臂 / 双臂 AC One（Phase 1 MIT）**：Stanford `arx_ros2_control`，控制模式对齐 [panthera-ht](https://github.com/fiveages-sim/open-deploy-ws/tree/panthera-ht)：默认 **`full_control`（OCS2 MIX，推荐真机）**，并保留真机 **`position`** 路径（`pd_control` 为 HT 别名）。部署流程对齐 [arx-acone](https://github.com/fiveages-sim/open-deploy-ws/tree/arx-acone)（`hardware:=real`，can1/can3）。
+- **Lift2S**：官方 `arxlift2s_ros2_control`（left `can1`、right `can3`、lift `can5`），暂无 MIX（后续 Phase）。
 
 ```bash
 cd ~/open-deploy-ws
 ./quick_start.sh
+# Build → 3) 单/双臂真机包（Stanford）
+# Launch → 1) 单臂 X5 或 2) 双臂 ACone → 1) 真机 → 控制模式（默认 full_control）
 ```
 
 <details>
@@ -201,6 +204,8 @@ source ~/open-deploy-ws/install/setup.bash
 ros2 launch ocs2_arm_controller demo.launch.py robot:=arx5 hardware:=real
 # 仅双臂 AC One（Stanford SDK + full_control / MIX）
 ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_acone hardware:=real
+# Legacy position write path（经 xacro_ 前缀）
+# ros2 launch ocs2_arm_controller demo.launch.py robot:=arx_acone hardware:=real xacro_control_mode:=position
 # Lift2S 分体（官方 SDK，臂 + 升降分开）
 ros2 launch ocs2_arm_controller split_body.launch.py robot:=arx_lift2s hardware:=real
 # Lift2S 全身
@@ -209,12 +214,14 @@ ros2 launch ocs2_arm_controller full_body.launch.py robot:=arx_lift2s hardware:=
 ros2 launch ocs2_arm_controller split_body.launch.py robot:=arx_lift2s hardware:=real launch_mode:=control_only
 ```
 
+**AC One MIX 验收：** HI `control_mode=full_control`；OCS2 `kp=30, kd=3` / Mixed mode；节点 `/arx_acone_left_system`、`/arx_acone_right_system`。详情见 `arx_acone_description/README.md`。
+
 </details>
 
 ## 4. 子模块说明
 
 - **arms_ros2_control** - 机械臂通用 ROS2 控制实现（含 `arxlift2s_ros2_control` 官方 SDK 硬件插件）
-- **arx-ros2-control** - ARX 单/双臂硬件驱动（Stanford arx5-sdk；`full_control` / `position`）
+- **arx-ros2-control** - ARX 单/双臂硬件驱动（Stanford arx5-sdk；`full_control` / `position`≈HT `pd_control`）
 - **ocs2_ros2** - OCS2 的 ROS2 版本（MPC 控制框架）
 - **robot-descriptions-arx** - ARX 机械臂描述文件
 - **robot-descriptions-common** - 通用机器人组件（夹爪、相机等）

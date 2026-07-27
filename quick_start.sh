@@ -36,31 +36,79 @@ ensure_ros_env() {
   return 1
 }
 
+# Stanford 真机 HI 控制模式（xacro_control_mode → robot.xacro control_mode）
+# 对齐 panthera-ht；ARX 无 position_velocity（Stanford 无 MAXtqe 等价路径）
+control_mode_menu() {
+  echo "" >&2
+  echo "请选择真机控制模式（参考 panthera-ht）:" >&2
+  echo "  1) full_control — OCS2 MIX（位置+速度+力矩+kp/kd，推荐真机）" >&2
+  echo "  2) position     — 保留真机位置环（仅 position + HI joint_k/d_gains）" >&2
+  echo "  3) pd_control   — position 的 HT 别名" >&2
+  echo "  0) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [0-3] (默认 1): " choice
+  if [ -z "${choice}" ]; then
+    choice="1"
+  fi
+  echo "${choice}"
+}
+
+resolve_control_mode() {
+  case "$1" in
+    1) echo "full_control" ;;
+    2) echo "position" ;;
+    3) echo "pd_control" ;;
+    0) echo "" ;;
+    *) echo "INVALID" ;;
+  esac
+}
+
 # 通用启动：对齐 fa_w2_ws
 # $1=描述 $2=launch 文件 $3=基础参数 $4=(可选)硬件覆盖 $5=(可选)预选运行模式
+# $6=1 时：单/双臂 Stanford 真机（模式 1/2）额外询问 control_mode（不动 Lift2S）
 do_launch() {
   local description="$1"
   local launch_file="$2"
   local base_args="$3"
   local hardware_override="${4:-}"
   local mode_choice="${5:-}"
+  local ask_control_mode="${6:-0}"
+  local control_mode_arg=""
+  local mode_label=""
 
   if [ -z "${mode_choice}" ]; then
     mode_choice="$(launch_mode_menu)"
   fi
 
+  # 仅 Stanford 单/双臂真机询问控制模式；仿真 / Lift2S 不走此分支
+  if [ "${ask_control_mode}" = "1" ] && { [ "${mode_choice}" = "1" ] || [ "${mode_choice}" = "2" ]; }; then
+    local cm_choice control_mode
+    cm_choice="$(control_mode_menu)"
+    control_mode="$(resolve_control_mode "${cm_choice}")"
+    if [ "${control_mode}" = "INVALID" ]; then
+      echo -e "${YELLOW}无效选项${NC}"
+      exit 1
+    fi
+    if [ -z "${control_mode}" ]; then
+      echo "返回"
+      return 0
+    fi
+    control_mode_arg="xacro_control_mode:=${control_mode}"
+    mode_label="，控制模式=${control_mode}"
+  fi
+
   case "${mode_choice}" in
     1)
-      echo -e "${GREEN}启动${description}（真机）...${NC}"
+      echo -e "${GREEN}启动${description}（真机${mode_label}）...${NC}"
       ensure_ros_env || exit 1
       # shellcheck disable=SC2086
-      ros2 launch ${launch_file} ${base_args} hardware:=${hardware_override:-real}
+      ros2 launch ${launch_file} ${base_args} hardware:=${hardware_override:-real} ${control_mode_arg}
       ;;
     2)
-      echo -e "${GREEN}启动${description}（真机 headless）...${NC}"
+      echo -e "${GREEN}启动${description}（真机 headless${mode_label}）...${NC}"
       ensure_ros_env || exit 1
       # shellcheck disable=SC2086
-      ros2 launch ${launch_file} ${base_args} hardware:=${hardware_override:-real} launch_mode:=control_only
+      ros2 launch ${launch_file} ${base_args} hardware:=${hardware_override:-real} launch_mode:=control_only ${control_mode_arg}
       ;;
     3)
       echo -e "${GREEN}启动${description}（仿真）...${NC}"
@@ -132,8 +180,8 @@ build_menu() {
 launch_menu() {
   echo "" >&2
   echo "请选择启动项:" >&2
-  echo "  1) 单臂 X5 (demo)" >&2
-  echo "  2) 双臂 ACone (demo)" >&2
+  echo "  1) 单臂 X5 (Stanford：仿真 / 真机 MIX)" >&2
+  echo "  2) 双臂 ACone (Stanford：仿真 / 真机 MIX)" >&2
   echo "  3) Lift2S 分体控制 (split_body)" >&2
   echo "  4) Lift2S 全身控制 (full_body)" >&2
   echo "  0) 返回" >&2
@@ -304,10 +352,12 @@ case "${top_choice}" in
     launch_choice="$(launch_menu)"
     case "${launch_choice}" in
       1)
-        do_launch "单臂 X5" "ocs2_arm_controller demo.launch.py" "robot:=arx5"
+        # Stanford 单臂：仿真走 mock/isaac；真机询问 full_control / position
+        do_launch "单臂 X5" "ocs2_arm_controller demo.launch.py" "robot:=arx5" "" "" "1"
         ;;
       2)
-        do_launch "双臂 ACone" "ocs2_arm_controller demo.launch.py" "robot:=arx_acone"
+        # Stanford 双臂 AC One：同上（can1 / can3）
+        do_launch "双臂 ACone" "ocs2_arm_controller demo.launch.py" "robot:=arx_acone" "" "" "1"
         ;;
       3)
         do_launch "Lift2S 分体控制" "ocs2_arm_controller split_body.launch.py" "robot:=arx_lift2s"
