@@ -2,6 +2,8 @@
 
 # HighTorque Panthera HT ROS2 部署工作空间初始化脚本
 # 功能：逐模块 source/deb 初始化子模块，支持 ocs2 / arms / common 核心包 deb 安装
+# 说明：arms 默认安装 ros-jazzy-arms-ros2-control-full（已含 ht_ros2_control）；
+#       arms 选 deb 时自动跳过并清理 src/ht-ros2-control 源码
 
 set -u
 
@@ -30,6 +32,8 @@ MODE_STATE_FILE="$REPO_DIR/.core_module_mode"
 USE_DEB_OCS2=1
 USE_DEB_ARMS=1
 USE_DEB_COMMON=1
+# deb 发布通道：latest | pre-release | conf（按 deb_versions.conf 固定 tag）
+DEB_CHANNEL="latest"
 FLOW="init"  # init | deb_only | deb_uninstall | switch | rosdep
 
 run_rosdep_install() {
@@ -55,7 +59,7 @@ run_rosdep_install() {
 
 run_install_core_debs() {
     local only_list="${1:-}"
-    print_info "安装核心 deb 包（顺序: ocs2 → common → arms_ros2_control）..."
+    print_info "安装核心 deb 包（顺序: ocs2 → common → arms_ros2_control-full，通道: ${DEB_CHANNEL}）..."
     local install_script="$REPO_DIR/scripts/install_core_debs.sh"
     if [ ! -x "$install_script" ]; then
         chmod +x "$install_script" 2>/dev/null || true
@@ -64,16 +68,19 @@ run_install_core_debs() {
         print_error "未找到安装脚本: $install_script"
         return 1
     fi
+    local -a args=()
+    case "$DEB_CHANNEL" in
+        latest|pre-release) args+=(--channel "$DEB_CHANNEL") ;;
+    esac
     if [ -n "$only_list" ]; then
-        bash "$install_script" --only "$only_list"
-    else
-        bash "$install_script"
+        args+=(--only "$only_list")
     fi
+    bash "$install_script" "${args[@]}"
 }
 
 run_uninstall_core_debs() {
     local only_list="${1:-}"
-    print_info "卸载核心 deb 包（顺序: arms_ros2_control → common → ocs2）..."
+    print_info "卸载核心 deb 包（顺序: arms_ros2_control-full → common → ocs2）..."
     local uninstall_script="$REPO_DIR/scripts/uninstall_core_debs.sh"
     if [ ! -x "$uninstall_script" ]; then
         chmod +x "$uninstall_script" 2>/dev/null || true
@@ -95,7 +102,34 @@ save_module_mode_state() {
 USE_DEB_OCS2=$USE_DEB_OCS2
 USE_DEB_ARMS=$USE_DEB_ARMS
 USE_DEB_COMMON=$USE_DEB_COMMON
+DEB_CHANNEL=$DEB_CHANNEL
 EOF
+}
+
+prompt_deb_channel() {
+    local choice
+    local default_num=1
+    case "$DEB_CHANNEL" in
+        pre-release) default_num=2 ;;
+        conf) default_num=3 ;;
+        *) DEB_CHANNEL="latest"; default_num=1 ;;
+    esac
+    echo ""
+    echo "deb 发布通道（覆盖各仓库 tag）："
+    echo "  1) latest      — GitHub Latest 稳定版（排除 pre-release）"
+    echo "  2) pre-release — 各仓库 pre-release 浮动标签（更新更勤）"
+    echo "  3) conf        — 使用 deb_versions.conf 中的固定版本"
+    read -rp "请选择通道 [1/2/3]（默认: ${default_num}）: " choice
+    choice="${choice:-$default_num}"
+    case "$choice" in
+        1|l|L|latest|stable) DEB_CHANNEL="latest" ;;
+        2|p|P|pre|pre-release|prerelease) DEB_CHANNEL="pre-release" ;;
+        3|c|C|conf|config) DEB_CHANNEL="conf" ;;
+        *)
+            print_warn "未知选项，保持: ${DEB_CHANNEL}"
+            ;;
+    esac
+    print_info "deb 通道: ${DEB_CHANNEL}"
 }
 
 is_pkg_installed() {
@@ -120,6 +154,10 @@ detect_module_state() {
     local deb_pkg="$2"
     local has_deb=0 has_src=0
     is_pkg_installed "$deb_pkg" && has_deb=1
+    # arms-full 与旧标准包都算 arms deb
+    if [ "$deb_pkg" = "ros-jazzy-arms-ros2-control-full" ]; then
+        is_pkg_installed "ros-jazzy-arms-ros2-control" && has_deb=1
+    fi
     path_is_git_checkout "$path" && has_src=1
     if [ "$has_deb" -eq 1 ] && [ "$has_src" -eq 1 ]; then
         echo "mixed"
@@ -144,7 +182,7 @@ module_short_to_path() {
 module_short_to_deb() {
     case "$1" in
         ocs2) echo "ros-jazzy-ocs2" ;;
-        arms) echo "ros-jazzy-arms-ros2-control" ;;
+        arms) echo "ros-jazzy-arms-ros2-control-full" ;;
         common) echo "ros-jazzy-robot-descriptions-common" ;;
         *) return 1 ;;
     esac
@@ -219,6 +257,8 @@ should_skip_top_submodule() {
         src/ocs2_ros2) [ "$USE_DEB_OCS2" -eq 1 ] && return 0 ;;
         src/arms_ros2_control) [ "$USE_DEB_ARMS" -eq 1 ] && return 0 ;;
         src/robot-descriptions-common) [ "$USE_DEB_COMMON" -eq 1 ] && return 0 ;;
+        # arms-full deb 已含 ht_ros2_control，不再拉源码
+        src/ht-ros2-control) [ "$USE_DEB_ARMS" -eq 1 ] && return 0 ;;
     esac
     return 1
 }
@@ -242,6 +282,9 @@ cleanup_deb_module_sources() {
         paths_to_clean+=("src/arms_ros2_control")
     [ "$USE_DEB_COMMON" -eq 1 ] && path_has_submodule_content "src/robot-descriptions-common" && \
         paths_to_clean+=("src/robot-descriptions-common")
+    # arms deb(=full) 已含 ht_ros2_control，自动清理其源码
+    [ "$USE_DEB_ARMS" -eq 1 ] && path_has_submodule_content "src/ht-ros2-control" && \
+        paths_to_clean+=("src/ht-ros2-control")
 
     if [ ${#paths_to_clean[@]} -eq 0 ]; then
         return 0
@@ -250,6 +293,9 @@ cleanup_deb_module_sources() {
     print_warn "以下目录将改由 deb 提供，检测到已有源码内容："
     for p in "${paths_to_clean[@]}"; do
         print_warn "  - $p"
+        if [ "$p" = "src/ht-ros2-control" ]; then
+            print_warn "    （arms-full deb 已包含 ht_ros2_control）"
+        fi
     done
     read -rp "是否清理上述目录？[Y/n]: " clean_choice
     case "$clean_choice" in
@@ -272,6 +318,9 @@ switch_uninstall_debs_for_source_targets() {
         if [ "$(get_use_deb_for_module "$m")" -eq 0 ]; then
             pkg="$(module_short_to_deb "$m")"
             if is_pkg_installed "$pkg"; then
+                to_uninstall+=("$m")
+            elif [ "$m" = "arms" ] && is_pkg_installed "ros-jazzy-arms-ros2-control"; then
+                # 兼容旧标准版 arms deb
                 to_uninstall+=("$m")
             fi
         fi
@@ -299,7 +348,9 @@ echo ""
 echo "请选择操作："
 echo ""
 echo "  1) 初始化工作空间（逐模块 source/deb）"
-echo "     默认推荐: ocs2=deb，arms=deb，common=deb（HT 描述/驱动仍源码编译）"
+echo "     默认推荐: ocs2=deb，arms=deb(full，含 ht_ros2_control)，common=deb"
+echo "     arms=deb 时自动跳过/清理 ht-ros2-control 源码；HT 描述包仍源码"
+echo "     deb 可选手动选择通道: latest / pre-release / conf"
 echo "  2) 切换模块安装方式（源码 ↔ deb）"
 echo "  3) 仅安装/更新核心 deb 包（跳过 Git 子模块拉取）"
 echo "  4) 卸载核心 deb 包"
@@ -324,12 +375,18 @@ fi
 if [ "$FLOW" = "deb_only" ]; then
     echo ""
     echo "选择要安装/更新的包（逗号分隔短名，回车=全部）："
-    echo "  ocs2, common, arms"
+    echo "  ocs2, common, arms（arms = arms-full，含 ht_ros2_control）"
     read -rp "包列表: " only_choice
     only_choice="$(echo "$only_choice" | tr -d '[:space:]')"
+    if [ -f "$MODE_STATE_FILE" ]; then
+        _ch="$(grep -E '^DEB_CHANNEL=' "$MODE_STATE_FILE" 2>/dev/null | cut -d= -f2- || true)"
+        case "$_ch" in latest|pre-release|conf) DEB_CHANNEL="$_ch" ;; esac
+    fi
+    prompt_deb_channel
     print_info "模式: 仅安装核心 deb 包（不拉取 Git 子模块）"
     echo ""
     run_install_core_debs "$only_choice" || exit 1
+    save_module_mode_state
     print_info ""
     print_info "完成后请执行: source /opt/ros/jazzy/setup.bash"
     exit 0
@@ -355,10 +412,12 @@ if [ "$FLOW" = "init" ]; then
         _def_ocs2="$(grep -E '^USE_DEB_OCS2=' "$MODE_STATE_FILE" 2>/dev/null | cut -d= -f2- || echo 1)"
         _def_arms="$(grep -E '^USE_DEB_ARMS=' "$MODE_STATE_FILE" 2>/dev/null | cut -d= -f2- || echo 1)"
         _def_common="$(grep -E '^USE_DEB_COMMON=' "$MODE_STATE_FILE" 2>/dev/null | cut -d= -f2- || echo 1)"
+        _ch="$(grep -E '^DEB_CHANNEL=' "$MODE_STATE_FILE" 2>/dev/null | cut -d= -f2- || true)"
+        case "$_ch" in latest|pre-release|conf) DEB_CHANNEL="$_ch" ;; esac
         [[ "$_def_ocs2" =~ ^[01]$ ]] || _def_ocs2=1
         [[ "$_def_arms" =~ ^[01]$ ]] || _def_arms=1
         [[ "$_def_common" =~ ^[01]$ ]] || _def_common=1
-        print_info "检测到上次选择: ocs2=$(mode_label "$_def_ocs2"), arms=$(mode_label "$_def_arms"), common=$(mode_label "$_def_common")"
+        print_info "检测到上次选择: ocs2=$(mode_label "$_def_ocs2"), arms=$(mode_label "$_def_arms"), common=$(mode_label "$_def_common"), channel=${DEB_CHANNEL}"
     fi
     USE_DEB_OCS2="$_def_ocs2"
     USE_DEB_ARMS="$_def_arms"
@@ -366,16 +425,20 @@ if [ "$FLOW" = "init" ]; then
 
     echo ""
     echo "核心模块安装方式（d=deb, s=source，回车用括号内默认）："
-    echo "  HT 专用包 robot-descriptions-ht / ht-ros2-control 始终源码编译"
+    echo "  robot-descriptions-ht 始终源码；arms=deb 时 ht-ros2-control 由 arms-full 提供"
     prompt_sd "  ocs2_ros2                   默认 $(mode_label "$USE_DEB_OCS2")" \
         "$( [ "$USE_DEB_OCS2" -eq 1 ] && echo d || echo s )" USE_DEB_OCS2
-    prompt_sd "  arms_ros2_control           默认 $(mode_label "$USE_DEB_ARMS")" \
+    prompt_sd "  arms_ros2_control (full)    默认 $(mode_label "$USE_DEB_ARMS")" \
         "$( [ "$USE_DEB_ARMS" -eq 1 ] && echo d || echo s )" USE_DEB_ARMS
     prompt_sd "  robot-descriptions-common   默认 $(mode_label "$USE_DEB_COMMON")" \
         "$( [ "$USE_DEB_COMMON" -eq 1 ] && echo d || echo s )" USE_DEB_COMMON
 fi
 
 if [ "$FLOW" = "switch" ]; then
+    if [ -f "$MODE_STATE_FILE" ]; then
+        _ch="$(grep -E '^DEB_CHANNEL=' "$MODE_STATE_FILE" 2>/dev/null | cut -d= -f2- || true)"
+        case "$_ch" in latest|pre-release|conf) DEB_CHANNEL="$_ch" ;; esac
+    fi
     echo ""
     echo "当前模块状态："
     for m in ocs2 arms common; do
@@ -411,8 +474,16 @@ fi
 if [ "$USE_DEB_ARMS" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 0 ]; then
     print_warn "arms 选择 deb 而 common 选择 source：arms deb 通常依赖 common 包，安装可能失败。"
 fi
+if [ "$USE_DEB_ARMS" -eq 1 ]; then
+    print_info "arms=deb → 安装 arms-full（含 ht_ros2_control），将跳过/清理 src/ht-ros2-control"
+fi
 
-print_info "模块方式: ocs2=$(mode_label "$USE_DEB_OCS2"), arms=$(mode_label "$USE_DEB_ARMS"), common=$(mode_label "$USE_DEB_COMMON")"
+# 只要有模块选 deb，就询问发布通道
+if [ "$USE_DEB_OCS2" -eq 1 ] || [ "$USE_DEB_ARMS" -eq 1 ] || [ "$USE_DEB_COMMON" -eq 1 ]; then
+    prompt_deb_channel
+fi
+
+print_info "模块方式: ocs2=$(mode_label "$USE_DEB_OCS2"), arms=$(mode_label "$USE_DEB_ARMS"), common=$(mode_label "$USE_DEB_COMMON"), channel=${DEB_CHANNEL}"
 echo ""
 
 if [ "$FLOW" = "switch" ]; then
@@ -550,9 +621,14 @@ save_module_mode_state
 print_info ""
 print_info "后续步骤："
 print_info "  1. source /opt/ros/jazzy/setup.bash"
-print_info "  2. ./quick_start.sh → 编译仿真所需包"
-print_info "     （核心包已 deb 时，仅编译 panthera_ht_description 等 HT 包）"
+print_info "  2. ./quick_start.sh → 编译仿真/真机所需包"
+print_info "     （arms=deb 时 ht_ros2_control 已在 arms-full 中，通常只需编译 panthera_ht_description）"
 print_info ""
 print_info "如需在源码与 deb 间切换，重新运行 ./init_repo.sh 并选择选项 2"
-print_info "如需更新 HT 源码子模块，可以运行："
-print_info "  git submodule update --remote src/robot-descriptions-ht src/ht-ros2-control"
+if [ "$USE_DEB_ARMS" -eq 0 ]; then
+    print_info "如需更新 HT 源码子模块，可以运行："
+    print_info "  git submodule update --remote src/robot-descriptions-ht src/ht-ros2-control"
+else
+    print_info "如需更新 HT 描述子模块，可以运行："
+    print_info "  git submodule update --remote src/robot-descriptions-ht"
+fi

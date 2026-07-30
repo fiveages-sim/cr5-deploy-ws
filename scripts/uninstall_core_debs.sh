@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 按与安装相反的顺序卸载核心 deb 包：arms → common → ocs2
+# 按与安装相反的顺序卸载核心 deb 包：arms-full → common → ocs2
 
 set -uo pipefail
 
@@ -18,7 +18,9 @@ resolve_only_token() {
   case "$1" in
     ocs2|ocs2_ros2|ros-jazzy-ocs2) echo "ros-jazzy-ocs2" ;;
     common|robot-descriptions-common|ros-jazzy-robot-descriptions-common) echo "ros-jazzy-robot-descriptions-common" ;;
-    arms|arms_ros2_control|ros-jazzy-arms-ros2-control) echo "ros-jazzy-arms-ros2-control" ;;
+    arms|arms_ros2_control|arms_full|arms-full|ros-jazzy-arms-ros2-control|ros-jazzy-arms-ros2-control-full) \
+      echo "ros-jazzy-arms-ros2-control-full" ;;
+    ht|ht_ros2_control|ht-ros2-control) echo "ros-jazzy-arms-ros2-control-full" ;;
     *) return 1 ;;
   esac
 }
@@ -28,10 +30,11 @@ usage() {
 用法: uninstall_core_debs.sh [--purge] [--only <list>]
 
 卸载核心 deb 包（逆序）：
-  ros-jazzy-arms-ros2-control → ros-jazzy-robot-descriptions-common → ros-jazzy-ocs2
+  ros-jazzy-arms-ros2-control-full → ros-jazzy-robot-descriptions-common → ros-jazzy-ocs2
+  （若仍装有旧版标准 arms 包也会一并尝试卸载）
 
   --purge        同时清除包配置文件（apt-get purge）
-  --only <list>  仅卸载指定包，逗号分隔。可用短名：ocs2, common, arms
+  --only <list>  仅卸载指定包，逗号分隔。可用短名：ocs2, common, arms, ht
                  未指定时卸载全部核心包。
 EOF
 }
@@ -47,7 +50,7 @@ while [[ $# -gt 0 ]]; do
         _tok="$(trim "$_tok")"
         [[ -z "$_tok" ]] && continue
         if ! _resolved="$(resolve_only_token "$_tok")"; then
-          print_error "未知 --only 项: $_tok（可用: ocs2, common, arms）"
+          print_error "未知 --only 项: $_tok（可用: ocs2, common, arms, ht）"
           exit 1
         fi
         ONLY_FILTER+=("$_resolved")
@@ -76,8 +79,9 @@ is_pkg_installed() {
   dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"
 }
 
-# 与安装顺序相反
+# 与安装顺序相反；顺带清理可能残留的标准版 arms
 CORE_DEB_PACKAGES=(
+  "ros-jazzy-arms-ros2-control-full"
   "ros-jazzy-arms-ros2-control"
   "ros-jazzy-robot-descriptions-common"
   "ros-jazzy-ocs2"
@@ -90,6 +94,10 @@ should_uninstall_pkg() {
   fi
   for f in "${ONLY_FILTER[@]}"; do
     [[ "$f" == "$pkg" ]] && return 0
+    # --only arms 时同时卸掉旧标准包
+    if [[ "$f" == "ros-jazzy-arms-ros2-control-full" && "$pkg" == "ros-jazzy-arms-ros2-control" ]]; then
+      return 0
+    fi
   done
   return 1
 }

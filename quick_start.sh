@@ -14,11 +14,20 @@ NC='\033[0m' # No Color
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 核心包由 deb 提供时，src 下无 arms_ros2_control / ocs2_ros2 等
+# HT 工作空间默认 arms-full（含 ht_ros2_control）
 core_deb_mode() {
+  if dpkg-query -W -f='${Status}' ros-jazzy-arms-ros2-control-full 2>/dev/null | grep -q "install ok installed"; then
+    return 0
+  fi
   if dpkg-query -W -f='${Status}' ros-jazzy-arms-ros2-control 2>/dev/null | grep -q "install ok installed"; then
     return 0
   fi
   [ ! -d "${WS_DIR}/src/arms_ros2_control" ] && [ ! -d "${WS_DIR}/src/ocs2_ros2" ]
+}
+
+# arms-full 已提供 ht_ros2_control，真机编译无需再编该包
+ht_from_deb() {
+  dpkg-query -W -f='${Status}' ros-jazzy-arms-ros2-control-full 2>/dev/null | grep -q "install ok installed"
 }
 
 source_ros_underlay() {
@@ -344,14 +353,22 @@ case "${top_choice}" in
       2)
     echo -e "${GREEN}开始编译真机所需包...${NC}"
     if core_deb_mode; then
-      echo -e "${BLUE}  模式: 核心包 deb + 编译 HT 描述与真机驱动${NC}"
-      if ! run_colcon_build --packages-select panthera_ht_description panthera_ros2_control --symlink-install; then
-        echo -e "${YELLOW}编译过程中出现错误${NC}"
-        exit 1
+      if ht_from_deb; then
+        echo -e "${BLUE}  模式: 核心包 deb(arms-full 含 ht_ros2_control) + 仅编译 HT 描述包${NC}"
+        if ! run_colcon_build --packages-select panthera_ht_description --symlink-install; then
+          echo -e "${YELLOW}编译过程中出现错误${NC}"
+          exit 1
+        fi
+      else
+        echo -e "${BLUE}  模式: 核心包 deb + 编译 HT 描述与真机驱动${NC}"
+        if ! run_colcon_build --packages-select panthera_ht_description ht_ros2_control --symlink-install; then
+          echo -e "${YELLOW}编译过程中出现错误${NC}"
+          exit 1
+        fi
       fi
     else
       if ! run_colcon_build --packages-up-to \
-        panthera_ros2_control \
+        ht_ros2_control \
         ocs2_arm_controller \
         panthera_ht_description \
         arms_teleop \
