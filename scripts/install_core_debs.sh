@@ -1,17 +1,8 @@
 #!/usr/bin/env bash
-# 快速模式：从 GitHub Release 下载并安装 ocs2 / common / arms_ros2_control-full deb 包
-# 本工作空间默认 arms-full（已含 ht_ros2_control）
+# 快速模式：从 GitHub Release 下载并安装 ocs2 / common / arms_ros2_control(-full) deb 包
+# 本工作空间默认 arms-full（已含 ht_ros2_control）；可用 --arms-variant 切换 standard
 
 set -uo pipefail
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-print_info()  { echo -e "${GREEN}[INFO]${NC} $1" >&2; }
-print_warn()  { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -20,18 +11,54 @@ ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 DEB_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
 DOWNLOAD_DIR="${REPO_DIR}/.deb_cache"
 
-trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; echo "${v%"${v##*[![:space:]]}"}"; }
+# 共用函数库（颜色输出 / GitHub API / 下载 / deb 校验等）
+LIB_DEB_COMMON="${SCRIPT_DIR}/lib_deb_common.sh"
+if [ ! -f "${LIB_DEB_COMMON}" ]; then
+  echo "[ERROR] 未找到共用函数库: ${LIB_DEB_COMMON}" >&2
+  exit 1
+fi
+# shellcheck source=lib_deb_common.sh
+# shellcheck disable=SC1090
+. "${LIB_DEB_COMMON}"
 
-# 短名 → 包前缀（用于 --only）
-# arms / ht 均指向 arms-full（含 ht_ros2_control）
+# arms 变体：full（ros-jazzy-arms-ros2-control-full）| standard（ros-jazzy-arms-ros2-control）
+# 空 = 未指定，沿用 deb_versions.conf 中的前缀
+ARMS_VARIANT=""
+
+# 解析 arms 变体对应的有效前缀（--arms-variant 覆盖 conf 中的前缀，不修改 deb_versions.conf）
+resolve_effective_prefix() {
+  local prefix="$1"
+  case "$prefix" in
+    ros-jazzy-arms-ros2-control|ros-jazzy-arms-ros2-control-full)
+      case "$ARMS_VARIANT" in
+        standard) echo "ros-jazzy-arms-ros2-control" ;;
+        full) echo "ros-jazzy-arms-ros2-control-full" ;;
+        *) echo "$prefix" ;;
+      esac
+      ;;
+    *) echo "$prefix" ;;
+  esac
+}
+
+# 短名 → 短名（用于 --only 过滤；arms / ht 统一为 arms，安装时再按变体解析实际前缀）
 resolve_only_token() {
   case "$1" in
-    ocs2|ocs2_ros2|ros-jazzy-ocs2) echo "ros-jazzy-ocs2" ;;
-    common|robot-descriptions-common|ros-jazzy-robot-descriptions-common) echo "ros-jazzy-robot-descriptions-common" ;;
+    ocs2|ocs2_ros2|ros-jazzy-ocs2) echo "ocs2" ;;
+    common|robot-descriptions-common|ros-jazzy-robot-descriptions-common) echo "common" ;;
     arms|arms_ros2_control|arms_full|arms-full|ros-jazzy-arms-ros2-control|ros-jazzy-arms-ros2-control-full) \
-      echo "ros-jazzy-arms-ros2-control-full" ;;
-    ht|ht_ros2_control|ht-ros2-control) echo "ros-jazzy-arms-ros2-control-full" ;;
+      echo "arms" ;;
+    ht|ht_ros2_control|ht-ros2-control) echo "arms" ;;
     *) return 1 ;;
+  esac
+}
+
+# conf 中的包前缀 → 短名（用于与 --only 过滤比较）
+prefix_to_short() {
+  case "$1" in
+    ros-jazzy-ocs2) echo "ocs2" ;;
+    ros-jazzy-robot-descriptions-common) echo "common" ;;
+    ros-jazzy-arms-ros2-control|ros-jazzy-arms-ros2-control-full) echo "arms" ;;
+    *) echo "$1" ;;
   esac
 }
 
@@ -39,6 +66,7 @@ usage() {
   cat <<EOF
 用法: install_core_debs.sh [--ros-distro <distro>] [--config <file>]
                           [--only <list>] [--channel <latest|pre-release>]
+                          [--arms-variant <full|standard>]
 
 从 deb_versions.conf 读取仓库信息，按依赖顺序安装核心 deb 包：
   1. ros-jazzy-ocs2
@@ -46,11 +74,14 @@ usage() {
   3. ros-jazzy-arms-ros2-control-full（含 ht_ros2_control 等硬件驱动）
 
   --only <list>     仅安装指定包，逗号分隔。可用短名：ocs2, common, arms, ht
-                    arms / ht 均安装 arms-full。
   --channel <name>  发布通道（覆盖 conf 中的固定 tag）：
                     latest       GitHub Latest（稳定版，排除 pre-release）
                     pre-release  各仓库的 pre-release 浮动标签
                     未指定时按 conf 中的 tag 安装。
+  --arms-variant <full|standard>
+                    arms deb 变体（覆盖 deb_versions.conf 中的前缀，不修改配置）：
+                    full       ros-jazzy-arms-ros2-control-full（默认，含 ht_ros2_control）
+                    standard   ros-jazzy-arms-ros2-control（标准包）
 
 也可通过环境变量 HT_DEB_CHANNEL=latest|pre-release 指定。
 安装使用 apt-get install，自动处理依赖。
@@ -70,6 +101,17 @@ while [[ $# -gt 0 ]]; do
         pre-release|prerelease|pre) DEB_CHANNEL="pre-release" ;;
         *)
           print_error "未知 --channel: $2（可用: latest, pre-release）"
+          exit 1
+          ;;
+      esac
+      shift 2
+      ;;
+    --arms-variant)
+      ARMS_VARIANT="$(trim "$2")"
+      case "$ARMS_VARIANT" in
+        full|standard) ;;
+        *)
+          print_error "未知 --arms-variant: $2（可用: full, standard）"
           exit 1
           ;;
       esac
@@ -106,12 +148,13 @@ if [[ -z "$DEB_CHANNEL" && -n "${HT_DEB_CHANNEL:-}" ]]; then
 fi
 
 should_install_prefix() {
-  local prefix="$1" f
+  local prefix="$1" short f
   if [[ ${#ONLY_FILTER[@]} -eq 0 ]]; then
     return 0
   fi
+  short="$(prefix_to_short "$prefix")"
   for f in "${ONLY_FILTER[@]}"; do
-    [[ "$f" == "$prefix" ]] && return 0
+    [[ "$f" == "$short" ]] && return 0
   done
   return 1
 }
@@ -267,20 +310,6 @@ glob_match() {
   esac
 }
 
-deb_file_size() {
-  stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || wc -c < "$1"
-}
-
-# 可选 GH_TOKEN / GITHUB_TOKEN 提高 API 限额；API 限流时回退 HTML 解析（无需 token）
-github_curl() {
-  local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
-  if [[ -n "$token" ]]; then
-    curl -fsSL -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" "$@"
-  else
-    curl -fsSL "$@"
-  fi
-}
-
 fetch_release_assets_from_html() {
   local repo="$1" tag="$2"
   curl -fsSL "https://github.com/${repo}/releases/expanded_assets/${tag}" 2>/dev/null \
@@ -322,25 +351,6 @@ lookup_asset_size() {
     fi
   done
   return 1
-}
-
-is_valid_deb_file() {
-  local deb_file="$1" expected_size="${2:-}"
-  local actual_size=""
-
-  [[ -f "$deb_file" ]] || return 1
-  actual_size="$(deb_file_size "$deb_file")"
-  [[ -n "$actual_size" && "$actual_size" -gt 0 ]] || return 1
-
-  if [[ -n "$expected_size" && "$actual_size" -ne "$expected_size" ]]; then
-    return 1
-  fi
-
-  ar t "$deb_file" >/dev/null 2>&1 || return 1
-  if command -v dpkg-deb >/dev/null 2>&1; then
-    dpkg-deb -I "$deb_file" >/dev/null 2>&1 || return 1
-  fi
-  return 0
 }
 
 fetch_release_assets() {
@@ -466,38 +476,6 @@ resolve_release_tag() {
   return 1
 }
 
-download_file_with_progress() {
-  local url="$1" dest="$2" filename="$3"
-  print_info "  下载 ${filename} ..."
-  print_info "  来源: ${url}"
-
-  # --progress-bar 输出到 stderr，不干扰命令替换；大文件显示下载进度
-  if curl -fL --progress-bar --connect-timeout 30 --retry 3 --retry-delay 2 \
-      -o "$dest" "$url"; then
-    local size
-    size="$(du -h "$dest" | awk '{print $1}')"
-    print_info "  下载完成 (${size}): ${dest}"
-    return 0
-  fi
-  return 1
-}
-
-purge_stale_deb_cache() {
-  local prefix="$1" keep_file="$2"
-  local f bn
-
-  [[ -d "$DOWNLOAD_DIR" ]] || return 0
-
-  shopt -s nullglob
-  for f in "${DOWNLOAD_DIR}/${prefix}"_*.deb "${DOWNLOAD_DIR}/${prefix}"_*.deb.part; do
-    bn="$(basename "$f")"
-    [[ "$bn" == "$keep_file" || "$bn" == "${keep_file}.part" ]] && continue
-    print_info "  清除旧版本缓存: ${bn}"
-    rm -f "$f"
-  done
-  shopt -u nullglob
-}
-
 download_deb_for_package() {
   local prefix="$1" tag="$2" primary_repo="$3"
   local repo asset patterns=() matched="" url dest tmp_dest resolved_tag expected_size=""
@@ -543,7 +521,7 @@ download_deb_for_package() {
   dest="${DOWNLOAD_DIR}/${matched}"
   tmp_dest="${dest}.part"
 
-  purge_stale_deb_cache "$prefix" "$matched"
+  prune_deb_cache "$DOWNLOAD_DIR" "$prefix" "$matched"
 
   if [[ -f "$dest" ]]; then
     if is_valid_deb_file "$dest" "$expected_size"; then
@@ -596,11 +574,14 @@ if [[ ${#DEB_SPECS[@]} -eq 0 ]]; then
 fi
 
 print_info "安装核心 deb 包（ROS ${ROS_DISTRO}，架构 ${DEB_ARCH}）"
-print_info "安装顺序: ocs2 → common → arms_ros2_control-full（含 ht_ros2_control）"
+print_info "安装顺序: ocs2 → common → arms_ros2_control(-full)"
 if [[ -n "${DEB_CHANNEL:-}" ]]; then
   print_info "发布通道: ${DEB_CHANNEL}（覆盖 conf 固定 tag）"
 else
   print_info "发布通道: conf（使用 deb_versions.conf 中的固定 tag）"
+fi
+if [[ -n "${ARMS_VARIANT:-}" ]]; then
+  print_info "arms 变体: ${ARMS_VARIANT}"
 fi
 print_info "配置文件: $DEB_CONF"
 if [[ ${#ONLY_FILTER[@]} -gt 0 ]]; then
@@ -631,20 +612,23 @@ for spec in "${DEB_SPECS[@]}"; do
     continue
   fi
 
+  # arms 变体覆盖 conf 中的前缀（--arms-variant，不改 deb_versions.conf）
+  eff_prefix="$(resolve_effective_prefix "$prefix")"
+
   step=$((step + 1))
-  print_info "[${step}/${total_to_install}] 处理 ${prefix} ..."
-  deb_path="$(download_deb_for_package "$prefix" "$tag" "$primary_repo")" || exit 1
-  if [[ "$prefix" == "ros-jazzy-robot-descriptions-common" ]]; then
+  print_info "[${step}/${total_to_install}] 处理 ${eff_prefix} ..."
+  deb_path="$(download_deb_for_package "$eff_prefix" "$tag" "$primary_repo")" || exit 1
+  if [[ "$eff_prefix" == "ros-jazzy-robot-descriptions-common" ]]; then
     prepare_common_deb_install
   fi
-  if [[ "$prefix" == "ros-jazzy-arms-ros2-control" || "$prefix" == "ros-jazzy-arms-ros2-control-full" ]]; then
-    prepare_arms_variant_install "$prefix"
+  if [[ "$eff_prefix" == "ros-jazzy-arms-ros2-control" || "$eff_prefix" == "ros-jazzy-arms-ros2-control-full" ]]; then
+    prepare_arms_variant_install "$eff_prefix"
   fi
   install_deb "$deb_path" || {
-    print_error "安装 ${prefix} 失败"
+    print_error "安装 ${eff_prefix} 失败"
     exit 1
   }
-  installed+=("$prefix")
+  installed+=("$eff_prefix")
   echo "" >&2
 done
 

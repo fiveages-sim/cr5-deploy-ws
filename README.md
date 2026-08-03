@@ -15,7 +15,7 @@
 | [`quick_start.sh`](quick_start.sh) | **日常编译与启动**：按场景编译（仿真/真机）、启动单臂/双臂（仿真/真机/手柄） |
 | [`release.sh`](release.sh) | **发布与现场 deb**：下载/安装/卸载核心 deb；维护者打包发布 zip（含/不含 `.git`） |
 
-辅助脚本：[`scripts/install_core_debs.sh`](scripts/install_core_debs.sh)、[`scripts/uninstall_core_debs.sh`](scripts/uninstall_core_debs.sh)；版本映射见 [`deb_versions.conf`](deb_versions.conf)。
+辅助脚本：[`scripts/install_core_debs.sh`](scripts/install_core_debs.sh)、[`scripts/uninstall_core_debs.sh`](scripts/uninstall_core_debs.sh)、共用函数库 [`scripts/lib_deb_common.sh`](scripts/lib_deb_common.sh)；版本映射见 [`deb_versions.conf`](deb_versions.conf)。
 
 核心 deb 安装顺序：`ocs2` → `robot-descriptions-common` → `arms-ros2-control-full`（**含 `ht_ros2_control`**）。  
 `arms=deb` 时不再拉 `ht-ros2-control` 源码；HT 描述包 `robot-descriptions-ht` 仍源码编译。
@@ -68,13 +68,19 @@ cd ~/ht-deploy-ws
 
 | 选项 | 说明 |
 |------|------|
-| 1) 初始化 | 逐模块 source/deb；**默认 ocs2/arms/common=deb**；arms=deb 时自动清理 `ht-ros2-control` 源码 |
-| 2) 切换 | 源码 ↔ deb（会清理冲突目录或卸载 deb） |
-| 3) 仅 deb | 只安装/更新核心 deb，不拉 Git 子模块 |
-| 4) 卸载 deb | 卸载核心 deb |
+| 1) 初始化 | 逐模块 source/deb；**默认 ocs2/arms/common=deb**；arms=deb 时可选 `full`（含 `ht_ros2_control`，跳过其源码）或 `standard`（需源码初始化 `ht-ros2-control`）；arms=源码 时不拉取 `arms_ros2_control/hardwares/*` 嵌套子模块 |
+| 2) 切换 | 源码 ↔ deb（会清理冲突目录或卸载 deb；切 arms→deb 时同样可选择变体） |
+| 3) 仅 deb | 只安装/更新核心 deb，不拉 Git 子模块（列表含 arms 时也可选变体） |
+| 4) 卸载 deb | 先检测并提示已安装的 ocs2 / common / arms(-full)，再选择要卸载的包 |
 | 5) rosdep | 仅对源码子模块路径运行 rosdep |
 
 初始化时还会询问 **deb 发布通道**：`1) latest` / `2) pre-release` / `3) conf`（见 `deb_versions.conf`）。
+
+**arms deb 变体（full / standard）**：
+- 通道为 `latest` / `pre-release` 时，arms=deb 会询问安装 `ros-jazzy-arms-ros2-control-full`（默认，含 `ht_ros2_control`）还是 `ros-jazzy-arms-ros2-control`（标准包）。
+- 通道为 `conf` 时，读取 `deb_versions.conf` 中 arms 行的变体并提示确认/切换（切换仅本次运行生效，不改配置文件）。
+
+**子模块更新安全说明**：`init_repo.sh` 只会把子模块更新到其**当前分支**的最新提交（仅快进），**不会切换分支**；子模块内的本地修改会先 `git stash` 暂存、更新成功后恢复，绝不会清空你的改动，也不会改动工作空间自身所在的分支。
 
 **推荐开发起步（核心用 deb，只编 HT 描述）：**
 
@@ -105,8 +111,9 @@ ht-deploy-ws/
 ├── release.sh                    # 现场 deb 安装 / 维护者打包
 ├── deb_versions.conf             # deb 版本与仓库映射
 ├── scripts/
-│   ├── install_core_debs.sh
-│   └── uninstall_core_debs.sh
+│   ├── install_core_debs.sh   # 核心 deb 下载/安装（支持 --arms-variant）
+│   ├── uninstall_core_debs.sh
+│   └── lib_deb_common.sh      # 共用函数库（release.sh / install_core_debs.sh source）
 └── src/
     ├─ robot-descriptions-ht      # 通常源码（HT 模型）
     ├─ ht-ros2-control            # arms=deb 时由 arms-full 提供，可跳过
@@ -135,11 +142,15 @@ ht-deploy-ws/
 ./release.sh --package-no-git --arch arm64
 ```
 
-也可 `./release.sh` → 菜单 **4) 含 .git** / **5) 不含 .git**。
+也可 `./release.sh` 进入交互菜单：
+- **1) 下载 deb 依赖包**：按 `deb_versions.conf` 获取到 `.deb_cache/`；若缓存已含匹配版本的 deb 则直接复用，不再下载
+- **2) 安装 deb 依赖包**：从 `.deb_cache/` 安装（需 sudo）
+- **3) 一键卸载 deb**（按安装逆序，需 sudo）
+- **4) 发布打包 zip（含 .git）** / **5) 发布打包 zip（不含 .git，体积更小）**
 
 发布包会：
 1. 保留 `src/robot-descriptions-ht` 源码；其余子模块改为占位（由 deb 提供）
-2. 下载目标架构最新核心 deb 到 `.deb_cache/`
+2. 下载目标架构最新核心 deb 到 `.deb_cache/`（已有匹配缓存则复用）
 3. 输出到 `dist/ht_deploy_ws_<时间>_<架构>[_nogit].zip`
 
 现场使用见上文「快速部署方式」。
