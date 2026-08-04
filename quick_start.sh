@@ -45,7 +45,8 @@ print_can_hint() {
   echo -e "${BLUE}  - 臂位置增益：ros2 param set /arx_lift2s_left_system joint_k_gains_position \"[80,...]\"${NC}"
   echo -e "${BLUE}  - 臂位置阻尼：ros2 param set /arx_lift2s_left_system joint_d_gains_position \"[2,...]\"${NC}"
   echo -e "${BLUE}  - 升降热调：ros2 param set /controller_manager arx_lift.hybrid_kp 6.0${NC}"
-  echo -e "${BLUE}  - 升降重力：ros2 param set /controller_manager arx_lift.gravity_compensation_torque -1.8${NC}"
+  echo -e "${BLUE}  - 升降重力：ros2 param set /controller_manager arx_lift.gravity_compensation_torque -1.01${NC}"
+  echo -e "${BLUE}  - 升降摩擦：ros2 param set /controller_manager arx_lift.coulomb_friction_torque 0.32${NC}"
   echo -e "${BLUE}  - 调试日志（默认关）：ros2 param set /arx_lift2s_lift_system status_debug true${NC}"
   echo -e "${BLUE}  - OCS2：分体 task_arm.info / 全身 fixed_base.info${NC}"
   echo -e "${BLUE}  - 勿与官方 X5Controller / lift_controller 同总线并行${NC}"
@@ -402,7 +403,7 @@ case "${top_choice}" in
           echo -e "${GREEN}编译完成！${NC}"
           echo -e "${BLUE}启动建议：Launch → 分体/全身 → 真机（臂 full_control/position；升降 position/hybrid）${NC}"
           echo -e "${BLUE}  OCS2：分体 task_arm.info / 全身 fixed_base.info（arx_lift2s_description/config/ocs2）${NC}"
-          echo -e "${BLUE}  升降 hybrid：HI 重力前馈，忽略 OCS2 effort；kp/kd：arx_lift.hybrid_*${NC}"
+          echo -e "${BLUE}  升降 hybrid：HI 重力+摩擦前馈，忽略 OCS2 effort；kp/kd/τ_ff：arx_lift.*${NC}"
           print_can_hint
         else
           echo -e "${YELLOW}编译失败。检查 external/arx5-sdk 与 external/SOEM/lib/<arch>/libsoem.so（见 init_repo / 包 README）。${NC}"
