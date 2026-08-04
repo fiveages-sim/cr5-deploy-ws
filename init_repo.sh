@@ -320,6 +320,39 @@ if [ "$FLOW" = "init" ]; then
         "$( [ "$USE_DEB_COMMON" -eq 1 ] && echo d || echo s )" USE_DEB_COMMON
 fi
 
+# switch 流程：仅对「安装方式真正变化」的模块动手；未改动的源码模块绝不 sync/update/pull/reset
+CHANGED_OCS2=0
+CHANGED_ARMS=0
+CHANGED_COMMON=0
+
+set_module_changed() {
+    case "$1" in
+        ocs2) CHANGED_OCS2="$2" ;;
+        arms) CHANGED_ARMS="$2" ;;
+        common) CHANGED_COMMON="$2" ;;
+    esac
+}
+
+get_module_changed() {
+    case "$1" in
+        ocs2) echo "$CHANGED_OCS2" ;;
+        arms) echo "$CHANGED_ARMS" ;;
+        common) echo "$CHANGED_COMMON" ;;
+        *) echo "0" ;;
+    esac
+}
+
+# 当前有效安装方式：deb=1 / source=0（mixed 视为需要处理，按目标对齐）
+current_use_deb_from_state() {
+    case "$1" in
+        deb) echo 1 ;;
+        source) echo 0 ;;
+        mixed) echo "mixed" ;;
+        none) echo "none" ;;
+        *) echo "none" ;;
+    esac
+}
+
 if [ "$FLOW" = "switch" ]; then
     # 先读上次可见性，避免覆盖稍后选择的 USE_DEB_*
     _saved_init="public"
@@ -329,7 +362,7 @@ if [ "$FLOW" = "switch" ]; then
     fi
 
     echo ""
-    echo "嵌套可见性（切换后初始化源码模块时使用）："
+    echo "嵌套可见性（仅当有模块改为源码时才会用到）："
     echo "  1) public  2) private/全部"
     read -rp "请输入选项 [1/2]（默认: $([ "$_saved_init" = private ] && echo 2 || echo 1)）: " vis_choice
     case "$vis_choice" in
@@ -348,27 +381,61 @@ if [ "$FLOW" = "switch" ]; then
     done
     echo ""
     echo "为每个模块选择目标（s=source, d=deb, k=保持），回车=保持："
+    echo "  注意：选「保持」或目标与当前一致时，不会对该模块做任何 git/deb 操作。"
     for m in ocs2 arms common; do
         p="$(module_short_to_path "$m")"
         pkg="$(module_short_to_deb "$m")"
         st="$(detect_module_state "$p" "$pkg")"
+        cur_deb="$(current_use_deb_from_state "$st")"
         read -rp "  $m 当前=$st [s/d/K]: " tgt
         tgt="${tgt:-k}"
+        local_target=""
         case "$tgt" in
-            s|S|source)
-                set_use_deb_for_module "$m" 0
-                ;;
-            d|D|deb)
-                set_use_deb_for_module "$m" 1
-                ;;
+            s|S|source) local_target=0 ;;
+            d|D|deb) local_target=1 ;;
             *)
+                # 保持：沿用当前状态；mixed/none 默认偏向 source 以便后续可初始化
                 case "$st" in
-                    deb) set_use_deb_for_module "$m" 1 ;;
-                    *) set_use_deb_for_module "$m" 0 ;;
+                    deb) local_target=1 ;;
+                    *) local_target=0 ;;
                 esac
+                # 明确保持且已是纯 deb/source → 不标记变更
+                if [ "$st" = "deb" ] || [ "$st" = "source" ]; then
+                    set_use_deb_for_module "$m" "$local_target"
+                    set_module_changed "$m" 0
+                    continue
+                fi
                 ;;
         esac
+        set_use_deb_for_module "$m" "$local_target"
+        if [ "$cur_deb" = "$local_target" ]; then
+            set_module_changed "$m" 0
+            print_info "  → $m 目标与当前一致 ($(mode_label "$local_target"))，跳过"
+        else
+            set_module_changed "$m" 1
+            print_info "  → $m 将切换: $st → $(mode_label "$local_target")"
+        fi
     done
+
+    if [ "$CHANGED_OCS2" -eq 0 ] && [ "$CHANGED_ARMS" -eq 0 ] && [ "$CHANGED_COMMON" -eq 0 ]; then
+        print_info "没有模块需要切换安装方式，仅保存可见性设置后退出。"
+        save_module_mode_state
+        exit 0
+    fi
+    echo ""
+    _changed_list=()
+    [ "$CHANGED_OCS2" -eq 1 ] && _changed_list+=("ocs2")
+    [ "$CHANGED_ARMS" -eq 1 ] && _changed_list+=("arms")
+    [ "$CHANGED_COMMON" -eq 1 ] && _changed_list+=("common")
+    print_info "本次仅处理有变化的模块: $(IFS=,; echo "${_changed_list[*]}")"
+    unset _changed_list
+fi
+
+# init 流程：视为三个核心模块都需要按选择对齐（保持原有全量初始化语义）
+if [ "$FLOW" = "init" ]; then
+    CHANGED_OCS2=1
+    CHANGED_ARMS=1
+    CHANGED_COMMON=1
 fi
 
 # 依赖提示
@@ -389,6 +456,38 @@ should_skip_top_submodule() {
     return 1
 }
 
+# switch/init 共用：该顶层路径是否需要本次 git 操作（仅「有变化且目标为 source」；robot-descriptions 仅当 common 有变化）
+should_touch_top_submodule() {
+    local path="$1"
+    case "$path" in
+        src/ocs2_ros2)
+            [ "$CHANGED_OCS2" -eq 1 ] && [ "$USE_DEB_OCS2" -eq 0 ]
+            return $?
+            ;;
+        src/arms_ros2_control)
+            [ "$CHANGED_ARMS" -eq 1 ] && [ "$USE_DEB_ARMS" -eq 0 ]
+            return $?
+            ;;
+        src/robot-descriptions)
+            if [ "$FLOW" = "switch" ]; then
+                # common→source：父仓已存在则不 sync/pull（只 init nested common）；缺失才 clone
+                if [ "$CHANGED_COMMON" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 0 ]; then
+                    path_is_git_checkout "src/robot-descriptions" && return 1
+                    return 0
+                fi
+                return 1
+            fi
+            # init：始终需要父仓（common 用 deb 时仍要其他模型包）
+            return 0
+            ;;
+        *)
+            # 未知顶层子模块：init 时照常处理，switch 时不动以免误伤
+            [ "$FLOW" = "init" ]
+            return $?
+            ;;
+    esac
+}
+
 should_skip_nested_path() {
     local relative_path="$1"
     if [ "$relative_path" = "common" ] && [ "$USE_DEB_COMMON" -eq 1 ]; then
@@ -400,7 +499,31 @@ should_skip_nested_path() {
 should_skip_nested_spec() {
     local parent_dir="$1"
     local relative_path="$2"
-    # 父仓本身用 deb 时，其全部嵌套都跳过
+
+    if [ "$FLOW" = "switch" ]; then
+        case "$parent_dir" in
+            src/ocs2_ros2)
+                [ "$CHANGED_OCS2" -eq 1 ] && [ "$USE_DEB_OCS2" -eq 0 ] || return 0
+                ;;
+            src/arms_ros2_control)
+                [ "$CHANGED_ARMS" -eq 1 ] && [ "$USE_DEB_ARMS" -eq 0 ] || return 0
+                ;;
+            src/robot-descriptions)
+                # 切换 common→source 时只初始化 common，不碰其他模型子模块
+                if [ "$CHANGED_COMMON" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 0 ] \
+                    && [ "$relative_path" = "common" ]; then
+                    return 1
+                fi
+                return 0
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+        return 1
+    fi
+
+    # init：父仓本身用 deb 时，其全部嵌套都跳过
     case "$parent_dir" in
         src/arms_ros2_control)
             [ "$USE_DEB_ARMS" -eq 1 ] && return 0
@@ -438,11 +561,12 @@ remove_submodule_path() {
 cleanup_deb_module_sources() {
     local paths_to_clean=() p relative_path full_path clean_choice
 
-    [ "$USE_DEB_OCS2" -eq 1 ] && path_has_submodule_content "src/ocs2_ros2" && \
+    # 仅清理「本次改为 deb」的模块源码，避免误删未切换模块的本地修改
+    [ "$CHANGED_OCS2" -eq 1 ] && [ "$USE_DEB_OCS2" -eq 1 ] && path_has_submodule_content "src/ocs2_ros2" && \
         paths_to_clean+=("src/ocs2_ros2")
-    [ "$USE_DEB_ARMS" -eq 1 ] && path_has_submodule_content "src/arms_ros2_control" && \
+    [ "$CHANGED_ARMS" -eq 1 ] && [ "$USE_DEB_ARMS" -eq 1 ] && path_has_submodule_content "src/arms_ros2_control" && \
         paths_to_clean+=("src/arms_ros2_control")
-    if [ "$USE_DEB_COMMON" -eq 1 ]; then
+    if [ "$CHANGED_COMMON" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 1 ]; then
         full_path="src/robot-descriptions/common"
         path_has_submodule_content "$full_path" && paths_to_clean+=("$full_path")
     fi
@@ -469,12 +593,12 @@ cleanup_deb_module_sources() {
     echo ""
 }
 
-# 切换：对目标为 source 但当前是 deb 的模块先卸载 deb
+# 切换：仅对「本次改为 source」且仍装着 deb 的模块卸载
 switch_uninstall_debs_for_source_targets() {
     local to_uninstall=()
     local m p pkg st
     for m in ocs2 arms common; do
-        if [ "$(get_use_deb_for_module "$m")" -eq 0 ]; then
+        if [ "$(get_module_changed "$m")" -eq 1 ] && [ "$(get_use_deb_for_module "$m")" -eq 0 ]; then
             pkg="$(module_short_to_deb "$m")"
             if is_pkg_installed "$pkg"; then
                 to_uninstall+=("$m")
@@ -527,31 +651,49 @@ cleanup_deb_module_sources
 
 print_info "开始初始化子模块..."
 
-# 同步子模块配置（不递归，只处理第一层子模块）
-print_info "同步子模块配置..."
-git submodule sync
-
-# 初始化顶层子模块（不递归；deb 模块跳过）
-print_info "初始化顶层子模块（跳过已选 deb 的仓库）..."
-init_paths=()
+# 同步/初始化：仅处理本次需要拉源码的顶层路径
+touch_paths=()
 while IFS= read -r submodule_path; do
-    should_skip_top_submodule "$submodule_path" && continue
-    init_paths+=("$submodule_path")
+    should_touch_top_submodule "$submodule_path" || continue
+    touch_paths+=("$submodule_path")
 done < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
-if [ ${#init_paths[@]} -gt 0 ]; then
-    git submodule update --init "${init_paths[@]}"
+
+if [ ${#touch_paths[@]} -eq 0 ]; then
+    print_info "本次无需拉取/更新任何顶层源码子模块"
 else
-    print_info "无需要初始化的顶层源码子模块"
+    print_info "同步子模块配置（仅: ${touch_paths[*]})..."
+    git submodule sync -- "${touch_paths[@]}"
+
+    print_info "初始化顶层子模块（仅有变化且目标为 source）..."
+    git submodule update --init -- "${touch_paths[@]}"
 fi
 
-# 遍历所有子模块并切换到对应分支
+# 遍历需要处理的源码子模块并切换到对应分支
 print_info "将源码子模块切换到对应分支的最新提交..."
 
 submodule_paths=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
 
+repo_has_local_changes() {
+    # 忽略仅子模块指针变化；有普通文件改动或未跟踪文件则视为脏（不自动 stash/reset）
+    if ! git diff-files --quiet --ignore-submodules=all 2>/dev/null; then
+        return 0
+    fi
+    if ! git diff-index --cached --quiet --ignore-submodules=all HEAD -- 2>/dev/null; then
+        return 0
+    fi
+    if [ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
+}
+
 for submodule_path in $submodule_paths; do
-    if should_skip_top_submodule "$submodule_path"; then
-        print_info "跳过子模块（deb 安装）: $submodule_path"
+    if ! should_touch_top_submodule "$submodule_path"; then
+        if should_skip_top_submodule "$submodule_path"; then
+            print_info "跳过子模块（deb 安装）: $submodule_path"
+        else
+            print_info "跳过子模块（本次未切换）: $submodule_path"
+        fi
         continue
     fi
     branch_name=$(git config --file .gitmodules --get "submodule.$submodule_path.branch" || echo "main")
@@ -566,13 +708,12 @@ for submodule_path in $submodule_paths; do
             continue
         fi
 
-        if ! git diff-index --quiet HEAD -- 2>/dev/null; then
-            print_warn "  检测到本地修改，先暂存..."
-            git stash push -m "Auto-stash before branch switch" || print_warn "  暂存失败，尝试重置..."
-            if ! git diff-index --quiet HEAD -- 2>/dev/null; then
-                print_warn "  暂存失败，重置本地修改..."
-                git reset --hard HEAD || true
-            fi
+        if repo_has_local_changes; then
+            print_error "  检测到本地修改，跳过以免丢失工作。"
+            print_error "  请先在该目录手动提交或 stash，再重新运行切换。"
+            print_info "  目录: $REPO_DIR/$submodule_path"
+            cd "$REPO_DIR"
+            continue
         fi
 
         print_info "  获取远程更新..."
@@ -594,24 +735,29 @@ for submodule_path in $submodule_paths; do
             if [ "$current_branch" = "HEAD" ] || [ -z "$current_branch" ]; then
                 if git show-ref --verify --quiet refs/heads/"$branch_name"; then
                     if ! git checkout "$branch_name" 2>/dev/null; then
-                        print_warn "  切换失败，尝试强制切换..."
-                        git checkout -f "$branch_name" || print_error "  无法切换到 $branch_name 分支"
+                        print_error "  无法切换到 $branch_name 分支（工作区可能非干净），已跳过"
+                        cd "$REPO_DIR"
+                        continue
                     fi
                 else
                     if ! git checkout -b "$branch_name" "origin/$branch_name" 2>/dev/null; then
-                        print_warn "  创建分支失败，尝试直接切换..."
-                        git checkout "$branch_name" || print_error "  无法创建/切换到 $branch_name 分支"
+                        print_error "  无法创建/切换到 $branch_name 分支，已跳过"
+                        cd "$REPO_DIR"
+                        continue
                     fi
                 fi
             else
                 if git show-ref --verify --quiet refs/heads/"$branch_name"; then
                     if ! git checkout "$branch_name" 2>/dev/null; then
-                        print_warn "  切换失败，尝试强制切换..."
-                        git checkout -f "$branch_name" || print_error "  无法切换到 $branch_name 分支"
+                        print_error "  无法切换到 $branch_name 分支（工作区可能非干净），已跳过"
+                        cd "$REPO_DIR"
+                        continue
                     fi
                 else
                     if ! git checkout -b "$branch_name" "origin/$branch_name" 2>/dev/null; then
-                        print_error "  无法创建/切换到 $branch_name 分支"
+                        print_error "  无法创建/切换到 $branch_name 分支，已跳过"
+                        cd "$REPO_DIR"
+                        continue
                     fi
                 fi
             fi
@@ -686,6 +832,11 @@ for nested_spec in "${nested_specs[@]}"; do
     branch_name=${branch_name:-main}
     print_info "处理嵌套子模块: $parent_dir/$relative_path -> 分支: $branch_name"
     cd "$full_path"
+    if repo_has_local_changes; then
+        print_error "  检测到本地修改，跳过以免丢失工作: $parent_dir/$relative_path"
+        cd "$REPO_DIR" || exit 1
+        continue
+    fi
     git fetch origin 2>/dev/null || print_warn "  获取远程更新失败，继续..."
     if git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
         actual_branch="$branch_name"
@@ -701,9 +852,17 @@ for nested_spec in "${nested_specs[@]}"; do
     current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
     if [ "$current_branch" != "$actual_branch" ]; then
         if git show-ref --verify --quiet "refs/heads/$actual_branch"; then
-            git checkout "$actual_branch" 2>/dev/null || git checkout -f "$actual_branch" 2>/dev/null || true
+            git checkout "$actual_branch" 2>/dev/null || {
+                print_error "  无法切换到 $actual_branch，已跳过"
+                cd "$REPO_DIR" || exit 1
+                continue
+            }
         else
-            git checkout -b "$actual_branch" "origin/$actual_branch" 2>/dev/null || git checkout "$actual_branch" 2>/dev/null || true
+            git checkout -b "$actual_branch" "origin/$actual_branch" 2>/dev/null || git checkout "$actual_branch" 2>/dev/null || {
+                print_error "  无法创建/切换到 $actual_branch，已跳过"
+                cd "$REPO_DIR" || exit 1
+                continue
+            }
         fi
     fi
     git pull origin "$actual_branch" 2>/dev/null || print_warn "  拉取更新失败"
@@ -719,13 +878,13 @@ print_info ""
 print_info "当前子模块状态："
 git submodule status
 
-# 安装 rosdep 依赖
+# 安装 rosdep 依赖（仅对本次处理的源码路径）
 print_info ""
 print_info "安装 rosdep 依赖..."
 if command -v rosdep >/dev/null 2>&1; then
     rosdep_paths=()
     while IFS= read -r submodule_path; do
-        should_skip_top_submodule "$submodule_path" && continue
+        should_touch_top_submodule "$submodule_path" || continue
         rosdep_paths+=("$submodule_path")
     done < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
     if [ ${#rosdep_paths[@]} -gt 0 ]; then
@@ -739,8 +898,20 @@ else
     print_info "  cd $REPO_DIR && rosdep install --from-paths src --ignore-src -r -y"
 fi
 
-# 安装选中的 deb 包
-deb_only_list="$(selected_deb_only_list)"
+# 安装选中的 deb 包（switch 仅安装「本次改为 deb」的模块）
+deb_only_parts=()
+for m in ocs2 common arms; do
+    if [ "$(get_use_deb_for_module "$m")" -eq 1 ]; then
+        if [ "$FLOW" = "switch" ] && [ "$(get_module_changed "$m")" -eq 0 ]; then
+            continue
+        fi
+        deb_only_parts+=("$m")
+    fi
+done
+deb_only_list=""
+if [ ${#deb_only_parts[@]} -gt 0 ]; then
+    deb_only_list="$(IFS=,; echo "${deb_only_parts[*]}")"
+fi
 if [ -n "$deb_only_list" ]; then
     print_info ""
     run_install_core_debs "$deb_only_list" || print_error "deb 安装失败，请检查 deb_versions.conf 或网络连接"
