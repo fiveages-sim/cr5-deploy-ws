@@ -345,7 +345,92 @@ ros2 launch arms_teleop joystick_teleop.launch.py
 - **A**：切换左/右臂（双臂）
 - **X / LT / RT**：夹爪开关或开合比例
 
-## 3. 子模块说明
+## 3. 外部控制接口（话题 / 服务）
+
+本文档说明外部 ROS2 节点如何向机械臂发送**末端位姿指令**、切换 **FSM 状态**，以及可用的服务 / 动作 / 反馈接口。
+
+**控制链路概述**：外部节点把目标位姿发布到目标话题，控制器内的 `PoseBasedReferenceManager` 订阅后将其转换为 OCS2 MPC 的目标轨迹执行。**前提：控制器必须处于 OCS2(3) 状态**，才会跟踪目标位姿（见下文「FSM 状态切换」）。
+
+> 坐标系：OCS2 基坐标系为 `base_link`；左臂末端 `left_gripper_center`、右臂末端 `right_gripper_center`。
+
+### 3.1 FSM 状态切换
+
+FSM 状态通过命令话题切换、状态话题读取：
+
+| 话题 | 消息类型 | 作用 |
+|------|----------|------|
+| `/fsm_command` | `std_msgs/msg/Int32` | **下发状态切换命令**（向该话题发送 1/2/3/4，见下表） |
+| `/fsm_state` | `std_msgs/msg/Int32` | **读取当前 FSM 状态**（值含义与上表一致） |
+
+`/fsm_command` 取值：
+
+| 值 | 状态 | 说明 |
+|----|------|------|
+| `1` | HOME | 回零 |
+| `2` | HOLD | 保持（等效急停/暂停，OCS2 中检测到碰撞也会自动切到此状态） |
+| `3` | **OCS2** | **MPC 跟踪目标位姿**（发送位姿指令前需处于此状态） |
+| `4` | MOVEJ | 关节运动 |
+
+示例：
+
+```bash
+ros2 topic pub -1 /fsm_command std_msgs/msg/Int32 "{data: 3}"
+```
+
+### 3.2 目标位姿话题（发送末端位姿指令）
+
+| 话题 | 消息类型 | 作用 |
+|------|----------|------|
+| `/left_target` | `geometry_msgs/msg/Pose` | 左臂目标位姿（单臂机器人也用它）。无 header，**直接按 `base_link` 坐标系解释**，收到即生效 |
+| `/left_target/stamped` | `geometry_msgs/msg/PoseStamped` | 左臂目标位姿。`header.frame_id` 可为任意坐标系，控制器自动 TF 变换到 `base_link`，并按 **moveL 插值**平滑运动 |
+| `/right_target` | `geometry_msgs/msg/Pose` | 右臂目标位姿（双臂模式） |
+| `/right_target/stamped` | `geometry_msgs/msg/PoseStamped` | 右臂目标位姿（双臂模式），同上支持 TF 与插值 |
+| `/dual_target/stamped` | `nav_msgs/msg/Path` | 双臂同时设置：2~3 个位姿，`[left, right]` 或 `[left, right, body]`，统一插值规划 |
+| `/target_path` | `nav_msgs/msg/Path` | 多点位姿路径（连续轨迹） |
+
+- 建议外部节点**优先使用 `*_target/stamped`**：可指定坐标系、自动 TF 变换，且自带平滑插值。
+- 注意：普通 `*_target`（Pose）在 moveL 插值执行期间会被忽略（插值优先），高频发送请统一使用 `/left_target/stamped`。
+
+示例：
+```bash
+
+ros2 topic pub -1 /left_target geometry_msgs/msg/Pose   "{position: {x: 0.30, y: 0.35, z: 0.35}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}"
+
+ros2 topic pub -1 /left_current_target geometry_msgs/msg/Pose   "{header: {frame_id: 'base_lros2 topic pub -1 /left_target geometry_msgs/msg/Pose   "{position: {x: 0.30, y: 0.35, z: 0.35}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}"
+```
+
+
+### 3.3 增量控制（手柄/键盘式）
+
+| 话题 | 消息类型 | 作用 |
+|------|----------|------|
+| `/control_input` | `arms_ros2_control_msgs/msg/Inputs` | 增量控制：`x/y/z/roll/pitch/yaw` 为位移/转角**增量**，`target=1/2` 选择左/右臂，`hand_command` 控制夹爪（`nan`=不控制，`0/1`=开关，其余 0~1 为开合比例） |
+
+由 `arms_target_manager` 处理并转换为 `*_target` 发布。适合连续微调，**不是**绝对位姿指令。
+
+
+### 3.4 反馈话题（读取）
+
+| 话题 | 消息类型 | 作用 |
+|------|----------|------|
+| `/left_current_pose` | `geometry_msgs/msg/PoseStamped` | 左臂当前末端位姿 |
+| `/right_current_pose` | `geometry_msgs/msg/PoseStamped` | 右臂当前末端位姿 |
+| `/body_current_pose` | `geometry_msgs/msg/PoseStamped` | 躯干当前位姿 |
+| `/left_current_target` | `geometry_msgs/msg/PoseStamped` | 左臂当前目标位姿（MPC 实际跟踪目标） |
+| `/right_current_target` | `geometry_msgs/msg/PoseStamped` | 右臂当前目标位姿 |
+
+### 3.5 夹爪控制（可选）
+
+| 话题 | 消息类型 | 作用 |
+|------|----------|------|
+| `/left_gripper_controller/target_command` | `std_msgs/msg/Int32` | 左夹爪开关：`0` 闭合 / `1` 张开 |
+| `/left_gripper_controller/target_percent` | `std_msgs/msg/Float64` | 左夹爪开合比例（0~1） |
+| `/right_gripper_controller/target_command` | `std_msgs/msg/Int32` | 右夹爪开关：`0` 闭合 / `1` 张开 |
+| `/right_gripper_controller/target_percent` | `std_msgs/msg/Float64` | 右夹爪开合比例（0~1） |
+
+> 以上话题/服务/动作名称及类型均来自当前运行系统（`ros2 topic/service/action list` 实测），单臂模式仅保留左臂相关话题，双臂模式左右臂均存在。
+
+## 4. 子模块说明
 
 - **arms_ros2_control** - 机械臂通用 ROS2 控制（含 `arms_teleop`）；deb 可用 `arms-ros2-control-full`
 - **ht-ros2-control** - Panthera HT 硬件驱动（`ht_ros2_control`）；**已包含在 arms-full deb 中**
