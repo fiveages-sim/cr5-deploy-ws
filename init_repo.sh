@@ -1,8 +1,15 @@
 #!/bin/bash
 
 # ARX Lift2S / ACone ROS2 部署工作空间初始化脚本
-# 参考：https://github.com/fiveages-sim/open-deploy-ws/tree/dobot-cr5
-# 功能：初始化顶层 + Lift2S 必需嵌套子模块，并准备 arxlift2s external（SDK symlink / 预编译 libsoem.so）
+# 架构对齐：https://github.com/fiveages-sim/open-deploy-ws/tree/panthera-ht
+# 风格参考：dobot-cr5 / main
+#
+# 顶层子模块：
+#   arms_ros2_control / arx-ros2-control / ocs2_ros2 /
+#   robot-descriptions-arx / robot-descriptions-common
+#
+# 真机 HI：src/arx-ros2-control（包名 arx_ros2_control）
+# 描述：src/robot-descriptions-arx
 
 set -u
 
@@ -23,13 +30,13 @@ cd "$REPO_DIR"
 
 if [ ! -d ".git" ]; then
     print_error "当前目录不是 git 仓库！"
-    print_info "请先克隆主仓库，例如："
-    print_info "  git clone git@github.com:fiveages-sim/open-deploy-ws.git arx_lift2s_ws"
+    print_info "请先克隆，例如："
+    print_info "  git clone git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws"
     exit 1
 fi
 
 # ---------------------------------------------------------------------------
-# 将单个 git 仓库切到配置分支的最新提交
+# 将单个 git 仓库切到 .gitmodules 配置分支的最新提交
 # ---------------------------------------------------------------------------
 checkout_submodule_branch() {
     local submodule_path="$1"
@@ -104,85 +111,60 @@ for submodule_path in $submodule_paths; do
 done
 
 # ---------------------------------------------------------------------------
-# Lift2S 真机必需：arms_ros2_control 内嵌套 HI
+# ocs2_ros2：按需初始化其嵌套子模块（若存在 .gitmodules）
 # ---------------------------------------------------------------------------
-ARMS_DIR="src/arms_ros2_control"
-ARMS_GITMODULES="${ARMS_DIR}/.gitmodules"
-LIFT2S_HI_REL="hardwares/arxlift2s_ros2_control"
-
-if [ -f "$ARMS_GITMODULES" ]; then
+OCS2_DIR="src/ocs2_ros2"
+if [ -f "${OCS2_DIR}/.gitmodules" ]; then
     print_info ""
-    print_info "初始化 Lift2S 嵌套硬件子模块（arms_ros2_control）..."
+    print_info "初始化 ocs2_ros2 嵌套子模块..."
     (
-        cd "$ARMS_DIR" || exit 1
-        git submodule sync -- "$LIFT2S_HI_REL" 2>/dev/null || true
-        git submodule update --init -- "$LIFT2S_HI_REL" || \
-          print_warn "嵌套子模块 $LIFT2S_HI_REL 初始化失败（若目录已有本地代码可忽略）"
+        cd "$OCS2_DIR" || exit 1
+        git submodule sync
+        git submodule update --init --recursive || \
+          print_warn "ocs2_ros2 嵌套子模块初始化失败（可稍后手动处理）"
     )
-    if [ -d "${ARMS_DIR}/${LIFT2S_HI_REL}" ]; then
-        (
-            cd "$ARMS_DIR" || exit 1
-            branch_name=$(git config --file .gitmodules --get "submodule.${LIFT2S_HI_REL}.branch" 2>/dev/null || echo "main")
-            print_info "处理嵌套子模块: ${ARMS_DIR}/${LIFT2S_HI_REL} -> 分支: ${branch_name}"
-            cd "$LIFT2S_HI_REL" || exit 1
-            if git rev-parse --git-dir > /dev/null 2>&1; then
-                git fetch origin || true
-                if git ls-remote --exit-code --heads origin "$branch_name" > /dev/null 2>&1; then
-                    git checkout -B "$branch_name" "origin/$branch_name" 2>/dev/null || \
-                      git checkout "$branch_name" || true
-                    git pull origin "$branch_name" || true
-                fi
-            fi
-        )
-    fi
-else
-    print_warn "未找到 ${ARMS_GITMODULES}，跳过嵌套 HI 初始化"
 fi
 
 # ---------------------------------------------------------------------------
-# arxlift2s_ros2_control external：Stanford SDK symlink + 预编译 libsoem.so
+# 校验真机 HI 依赖：src/arx-ros2-control/external/{arx5-sdk, arx_lift_src}
 # ---------------------------------------------------------------------------
-setup_arxlift2s_external() {
-    local pkg="${REPO_DIR}/src/arms_ros2_control/hardwares/arxlift2s_ros2_control"
-    local sdk_src="${REPO_DIR}/src/arx-ros2-control/external/arx5-sdk"
-    local ext="${pkg}/external"
-    local soem_arch="x86_64"
+check_arx_hi_external() {
+    local pkg="${REPO_DIR}/src/arx-ros2-control"
+    local sdk="${pkg}/external/arx5-sdk"
+    local lift="${pkg}/external/arx_lift_src"
+    local arch="x86_64"
     case "$(uname -m)" in
-        aarch64|arm64|armv7l|armv6l) soem_arch="aarch64" ;;
+        aarch64|arm64|armv7l|armv6l) arch="aarch64" ;;
     esac
-    local soem_lib="${ext}/SOEM/lib/${soem_arch}/libsoem.so"
-
-    if [ ! -d "$pkg" ]; then
-        print_warn "未找到 arxlift2s_ros2_control，跳过 external 准备"
-        return 0
-    fi
 
     print_info ""
-    print_info "准备 arxlift2s_ros2_control/external（Stanford SDK + 预编译 SOEM）..."
-    mkdir -p "$ext"
+    print_info "检查 arx-ros2-control 真机依赖..."
 
-    if [ ! -e "${ext}/arx5-sdk/include/app/joint_controller.h" ]; then
-        if [ -f "${sdk_src}/include/app/joint_controller.h" ]; then
-            rm -f "${ext}/arx5-sdk"
-            ln -sfn ../../../../arx-ros2-control/external/arx5-sdk "${ext}/arx5-sdk"
-            print_info "  已创建 external/arx5-sdk -> arx-ros2-control/external/arx5-sdk"
-        else
-            print_warn "  未找到 Stanford SDK：${sdk_src}"
-            print_warn "  请确认 src/arx-ros2-control 已初始化"
-        fi
-    else
-        print_info "  external/arx5-sdk 已就绪"
+    if [ ! -d "$pkg" ]; then
+        print_error "未找到 ${pkg}（请确认 .gitmodules 中 src/arx-ros2-control 已初始化）"
+        return 1
     fi
 
-    if [ -f "${soem_lib}" ]; then
-        print_info "  external/SOEM/lib/${soem_arch}/libsoem.so 已就绪"
+    if [ -f "${sdk}/include/app/joint_controller.h" ]; then
+        print_info "  arx5-sdk 头文件就绪"
     else
-        print_warn "  缺少预编译 SOEM：${soem_lib}"
-        print_warn "  见 arxlift2s_ros2_control/external/SOEM/README.md（不再克隆 SOEM 源码）"
+        print_warn "  缺少 Stanford SDK：${sdk}/include/app/joint_controller.h"
+    fi
+
+    if [ -f "${sdk}/lib/${arch}/libhardware.so" ] && [ -f "${sdk}/lib/${arch}/libsolver.so" ]; then
+        print_info "  arx5-sdk 预编译库就绪 (${arch})"
+    else
+        print_warn "  缺少 arx5-sdk/lib/${arch}/libhardware.so 或 libsolver.so"
+    fi
+
+    if [ -f "${lift}/lib/${arch}/libarx_lift_src.so" ]; then
+        print_info "  arx_lift_src 库就绪 (${arch})"
+    else
+        print_warn "  缺少 ${lift}/lib/${arch}/libarx_lift_src.so（Lift2S 升降真机需要）"
     fi
 }
 
-setup_arxlift2s_external
+check_arx_hi_external
 
 print_info ""
 print_info "=========================================="
@@ -192,19 +174,15 @@ print_info ""
 print_info "顶层子模块状态："
 git submodule status
 
-if [ -d "$ARMS_DIR" ]; then
-    print_info ""
-    print_info "arms_ros2_control 嵌套 HI（节选）："
-    git -C "$ARMS_DIR" submodule status -- hardwares/arxlift2s_ros2_control 2>/dev/null \
-      || print_warn "  无法读取 arxlift2s 嵌套状态（可能为本地非 submodule 检出）"
-fi
-
 print_info ""
 print_info "下一步："
-print_info "  ./quick_start.sh          # 编译 / 启动（含 Lift2S 真机）"
+print_info "  rosdep install --from-paths src --ignore-src -r -y"
+print_info "  ./quick_start.sh          # 编译 / 启动"
 print_info "  git submodule update --remote   # 更新顶层子模块到远程分支最新"
 print_info ""
-print_info "Lift2S 真机：臂 can1/can3（Stanford full_control MIX）+ 升降 can5（Hybrid MIT）。"
-print_info "升降增益：URDF hybrid_kp/kd 或运行时 arx_lift.hybrid_kp / arx_lift.hybrid_kd。"
-print_info "OCS2 配置（fa-w2 风格）：config/ocs2/task_arm.info（分体）/ fixed_base.info（全身）。"
-print_info "勿与官方 X5Controller / lift_controller 同总线并行。"
+print_info "真机说明："
+print_info "  HI 包：src/arx-ros2-control（arx_ros2_control）"
+print_info "  描述：src/robot-descriptions-arx"
+print_info "  臂：仅 full_control（MIT MIX）；单臂可选左 can1 / 右 can3"
+print_info "  升降：can5，hybrid（默认）或 soft_p/position"
+print_info "  勿与官方 X5Controller / lift_controller 同总线并行。"
