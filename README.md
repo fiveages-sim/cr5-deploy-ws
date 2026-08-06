@@ -58,7 +58,10 @@ src/
   export RMW_IMPLEMENTATION=rmw_zenoh_cpp
   ```
 * 临时取消：`unset RMW_IMPLEMENTATION`
-* 使用 `robot-descriptions-common` 的 launch 时，会自动拉起 zenoh 路由
+* **先起 Zenoh router，再 launch**（否则 `controller_manager` 会卡在
+  `Waiting for data on 'robot_description' topic`）
+  - 推荐：`./quick_start.sh` → Launch（会自动预启 router）
+  - 手动 `ros2 launch` 时先另开终端：`ros2 run rmw_zenoh_cpp rmw_zenohd`
 
 ## 3. 程序编译与启动
 

@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
 # 快速启动脚本（ARX Lift2S / ACone Deploy Workspace）
-# 架构对齐：https://github.com/fiveages-sim/open-deploy-ws/tree/panthera-ht
-# 风格参考：dobot-cr5 / main
 #
 # - 真机 HI：src/arx-ros2-control（包 arx_ros2_control）
 # - 描述：src/robot-descriptions-arx
@@ -51,6 +49,54 @@ ensure_ros_env() {
   return 1
 }
 
+# Zenoh router must be up BEFORE ros2 launch. Starting it inside the same launch
+# races robot_state_publisher vs controller_manager on /robot_description
+# (CM stays on "Waiting for data on 'robot_description' topic").
+is_zenoh_router_running() {
+  pgrep -x rmw_zenohd >/dev/null 2>&1 || pgrep -x zenohd >/dev/null 2>&1
+}
+
+ensure_zenoh_router() {
+  if [ "${RMW_IMPLEMENTATION:-}" != "rmw_zenoh_cpp" ]; then
+    return 0
+  fi
+
+  if is_zenoh_router_running; then
+    echo -e "${GREEN}[INFO] Zenoh router 已在运行，跳过启动${NC}"
+    return 0
+  fi
+
+  if ! command -v ros2 >/dev/null 2>&1; then
+    echo -e "${RED}[ERROR] ros2 不可用，无法启动 Zenoh router${NC}"
+    return 1
+  fi
+  if ! ros2 pkg prefix rmw_zenoh_cpp >/dev/null 2>&1; then
+    echo -e "${YELLOW}[WARN] 未安装 rmw_zenoh_cpp；请: sudo apt install ros-jazzy-rmw-zenoh-cpp${NC}"
+    echo -e "${YELLOW}      或 unset RMW_IMPLEMENTATION 后重试${NC}"
+    return 1
+  fi
+
+  local log_file="${WS_DIR}/log/rmw_zenohd.log"
+  mkdir -p "${WS_DIR}/log"
+  echo -e "${GREEN}[INFO] 预启动 Zenoh router（避免 /robot_description 竞态）...${NC}"
+  nohup ros2 run rmw_zenoh_cpp rmw_zenohd >"${log_file}" 2>&1 &
+  disown || true
+
+  local i=0
+  while [ "${i}" -lt 50 ]; do
+    if is_zenoh_router_running; then
+      sleep 0.8
+      echo -e "${GREEN}[INFO] Zenoh router 就绪（log: ${log_file}）${NC}"
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+
+  echo -e "${RED}[ERROR] Zenoh router 启动超时，见 ${log_file}${NC}"
+  return 1
+}
+
 soem_arch_dir() {
   case "$(uname -m)" in
     aarch64|arm64|armv7l|armv6l) echo "aarch64" ;;
@@ -94,6 +140,28 @@ ensure_arx_hi_external() {
   if [ ! -f "${LIFT_DIR}/lib/${arch}/libarx_lift_src.so" ]; then
     echo -e "${YELLOW}[WARN] 缺少 libarx_lift_src.so（Lift2S 升降真机需要）${NC}"
     echo -e "${YELLOW}      路径：${LIFT_DIR}/lib/${arch}/libarx_lift_src.so${NC}"
+  fi
+
+  # libhardware.so → libsoem.so (SOEM 1.4.x)；缺了真机 HI 会 dlopen 失败
+  local soem=""
+  for candidate in \
+    "${CONDA_PREFIX:-}/lib/libsoem.so" \
+    "${HOME}/miniconda3/envs/arx-py312/lib/libsoem.so" \
+    "${HOME}/mambaforge/envs/arx-py312/lib/libsoem.so" \
+    "${HOME}/miniforge3/envs/arx-py312/lib/libsoem.so" \
+    "${ARX_HI_DIR}/external/SOEM/lib/${arch}/libsoem.so"
+  do
+    if [ -n "${candidate}" ] && [ -f "${candidate}" ]; then
+      soem="${candidate}"
+      break
+    fi
+  done
+  if [ -n "${soem}" ]; then
+    echo -e "${GREEN}[INFO] 找到兼容 SOEM：${soem}${NC}"
+  else
+    echo -e "${YELLOW}[WARN] 未找到 libsoem.so；真机加载 arx_ros2_control 会失败${NC}"
+    echo -e "${YELLOW}      安装：conda install -n arx-py312 conda-forge::soem=1.4.0${NC}"
+    echo -e "${YELLOW}      或放入：${ARX_HI_DIR}/external/SOEM/lib/${arch}/libsoem.so${NC}"
   fi
 
   echo -e "${GREEN}[INFO] arx-ros2-control external 依赖检查通过${NC}"
@@ -149,9 +217,163 @@ resolve_lift_motor_mode() {
   esac
 }
 
+# ==================== 上次启动记录（方案 A：完整复现） ====================
+QS_LAST_LAUNCH_FILE="${WS_DIR}/config/launch_last.conf"
+
+_save_launch_last() {
+  # $1=desc $2=launch_file $3=base_args $4=mode_choice
+  # $5=ask_arm_side $6=ask_lift_mode $7=can_arg $8=lift_motor_mode_arg
+  local f="${QS_LAST_LAUNCH_FILE}"
+  mkdir -p "$(dirname "${f}")"
+  {
+    printf 'LAST_DESC=%q\n' "${1:-}"
+    printf 'LAST_LAUNCH_FILE=%q\n' "${2:-}"
+    printf 'LAST_BASE_ARGS=%q\n' "${3:-}"
+    printf 'LAST_MODE_CHOICE=%q\n' "${4:-}"
+    printf 'LAST_ASK_ARM_SIDE=%q\n' "${5:-0}"
+    printf 'LAST_ASK_LIFT_MODE=%q\n' "${6:-0}"
+    printf 'LAST_CAN_ARG=%q\n' "${7:-}"
+    printf 'LAST_LIFT_MODE_ARG=%q\n' "${8:-}"
+  } > "${f}"
+}
+
+_load_launch_last() {
+  LAST_DESC="" LAST_LAUNCH_FILE="" LAST_BASE_ARGS="" LAST_MODE_CHOICE=""
+  LAST_ASK_ARM_SIDE="" LAST_ASK_LIFT_MODE="" LAST_CAN_ARG="" LAST_LIFT_MODE_ARG=""
+  if [ -f "${QS_LAST_LAUNCH_FILE}" ]; then
+    # shellcheck disable=SC1090
+    source "${QS_LAST_LAUNCH_FILE}" 2>/dev/null || true
+  fi
+}
+
+_mode_choice_label() {
+  case "$1" in
+    1) echo "真机" ;;
+    2) echo "真机headless" ;;
+    3) echo "仿真" ;;
+    4) echo "仿真headless" ;;
+    5) echo "Isaac" ;;
+    6) echo "Isaac headless" ;;
+    7) echo "仅可视化" ;;
+    *) echo "模式${1}" ;;
+  esac
+}
+
+# 使用上次记录完整复现（不再询问侧/升降/运行模式）
+_do_last_launch() {
+  _load_launch_last
+  if [ -z "${LAST_LAUNCH_FILE}" ] || [ -z "${LAST_MODE_CHOICE}" ]; then
+    echo -e "${YELLOW}[WARN] 无有效上次启动记录（${QS_LAST_LAUNCH_FILE}）${NC}"
+    return 1
+  fi
+  echo -e "${GREEN}使用上次启动：${LAST_DESC}${NC}"
+  do_launch "${LAST_DESC}" "${LAST_LAUNCH_FILE}" "${LAST_BASE_ARGS}" \
+    "${LAST_MODE_CHOICE}" "${LAST_ASK_ARM_SIDE:-0}" "${LAST_ASK_LIFT_MODE:-0}" \
+    "1" "${LAST_CAN_ARG}" "${LAST_LIFT_MODE_ARG}"
+}
+
+# ==================== 手柄遥操作 ====================
+_joystick_enumerate_devices() {
+  if ! command -v ros2 >/dev/null 2>&1; then
+    return 1
+  fi
+  ros2 run joy joy_enumerate_devices 2>/dev/null
+}
+
+_joystick_count() {
+  local count
+  count="$(_joystick_enumerate_devices | grep -cE '^[[:space:]]*[0-9]+[[:space:]]*:' 2>/dev/null)" || count=0
+  echo "${count}"
+}
+
+_joystick_first_id() {
+  local device_id
+  device_id="$(_joystick_enumerate_devices | awk -F ':' '/^[[:space:]]*[0-9]+[[:space:]]*:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print $1; exit}')"
+  echo "${device_id:-0}"
+}
+
+joystick_device_menu() {
+  local menu_lines
+  echo "" >&2
+  echo "请选择手柄设备:" >&2
+  menu_lines="$(_joystick_enumerate_devices | awk -F ':' '/^[[:space:]]*[0-9]+[[:space:]]*:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $5); printf "  %s) %s\n", $1, $5}')"
+  if [ -n "${menu_lines}" ]; then
+    echo "${menu_lines}" >&2
+  else
+    echo "  0) Joy ID 0 (未枚举到手柄，使用默认 ID)" >&2
+  fi
+  echo "  q) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入 Joy ID (默认: 0，输入 q 返回): " choice
+  if [ -z "${choice}" ]; then
+    choice="0"
+  fi
+  if [ "${choice}" = "q" ] || [ "${choice}" = "Q" ]; then
+    choice="back"
+  fi
+  echo "${choice}"
+}
+
+_run_joystick_teleop_launch() {
+  local joy_dev="${1:-}"
+  ensure_ros_env || exit 1
+  echo -e "${BLUE}[INFO] 手柄遥操需机器人 stack 已在运行（另开终端启动真机/仿真）${NC}"
+  if [ -z "${joy_dev}" ]; then
+    echo -e "${GREEN}启动手柄遥操作...${NC}"
+    ros2 launch arms_teleop joystick_teleop.launch.py
+  else
+    echo -e "${GREEN}启动手柄遥操作（${joy_dev}）...${NC}"
+    ros2 launch arms_teleop joystick_teleop.launch.py "joy_dev:=${joy_dev}"
+  fi
+}
+
+do_launch_joystick_teleop() {
+  local device_choice device_count device_id
+
+  ensure_ros_env || exit 1
+  device_count="$(_joystick_count)"
+
+  if [ "${device_count}" -eq 1 ]; then
+    device_id="$(_joystick_first_id)"
+    if [ "${device_id}" = "0" ]; then
+      _run_joystick_teleop_launch ""
+    else
+      _run_joystick_teleop_launch "/dev/input/js${device_id}"
+    fi
+    return
+  fi
+
+  if [ "${device_count}" -eq 0 ]; then
+    echo -e "${YELLOW}[WARN] 未枚举到手柄，使用默认 /dev/input/js0${NC}"
+    _run_joystick_teleop_launch ""
+    return
+  fi
+
+  device_choice="$(joystick_device_menu)"
+  case "${device_choice}" in
+    back)
+      echo "返回"
+      return
+      ;;
+    0)
+      _run_joystick_teleop_launch ""
+      ;;
+    *)
+      if ! [[ "${device_choice}" =~ ^[0-9]+$ ]]; then
+        echo -e "${YELLOW}无效 Joy ID: ${device_choice}${NC}"
+        exit 1
+      fi
+      _run_joystick_teleop_launch "/dev/input/js${device_choice}"
+      ;;
+  esac
+}
+
 # $1=描述 $2=launch 包+文件 $3=基础参数
-# $5=1 时：单臂真机询问左/右 CAN（写入 xacro_can_interface）
+# $4=预选运行模式（空则询问）
+# $5=1 时：单臂真机询问左/右 CAN
 # $6=1 时：真机询问升降 lift_motor_mode
+# $7=1 时：复现模式，跳过侧/升降询问，使用 $8/$9
+# $8=preset can_arg  $9=preset lift_motor_mode_arg
 do_launch() {
   local description="$1"
   local launch_file="$2"
@@ -159,9 +381,11 @@ do_launch() {
   local mode_choice="${4:-}"
   local ask_arm_side="${5:-0}"
   local ask_lift_mode="${6:-0}"
-  local can_arg=""
-  local lift_motor_mode_arg=""
+  local replay="${7:-0}"
+  local can_arg="${8:-}"
+  local lift_motor_mode_arg="${9:-}"
   local mode_label=""
+  local save_desc=""
 
   if [ -z "${mode_choice}" ]; then
     mode_choice="$(launch_mode_menu)"
@@ -169,50 +393,78 @@ do_launch() {
 
   # 真机 / 真机 headless
   if { [ "${mode_choice}" = "1" ] || [ "${mode_choice}" = "2" ]; }; then
-    if [ "${ask_arm_side}" = "1" ]; then
-      local side_choice can_if
-      side_choice="$(arm_side_menu)"
-      can_if="$(resolve_arm_can "${side_choice}")"
-      if [ "${can_if}" = "INVALID" ]; then
-        echo -e "${YELLOW}无效选项${NC}"
-        exit 1
+    if [ "${replay}" = "1" ]; then
+      if [ -n "${can_arg}" ]; then
+        if [[ "${can_arg}" == *can1* ]]; then
+          mode_label="，左臂 can1"
+        elif [[ "${can_arg}" == *can3* ]]; then
+          mode_label="，右臂 can3"
+        fi
       fi
-      if [ -z "${can_if}" ]; then
-        echo "返回"
-        return 0
+      mode_label="${mode_label}，臂=full_control"
+      if [ -n "${lift_motor_mode_arg}" ]; then
+        mode_label="${mode_label}，升降=${lift_motor_mode_arg#xacro_lift_motor_mode:=}"
       fi
-      can_arg="xacro_can_interface:=${can_if}"
-      if [ "${can_if}" = "can1" ]; then
-        mode_label="，左臂 can1"
-      else
-        mode_label="，右臂 can3"
+    else
+      can_arg=""
+      lift_motor_mode_arg=""
+      if [ "${ask_arm_side}" = "1" ]; then
+        local side_choice can_if
+        side_choice="$(arm_side_menu)"
+        can_if="$(resolve_arm_can "${side_choice}")"
+        if [ "${can_if}" = "INVALID" ]; then
+          echo -e "${YELLOW}无效选项${NC}"
+          exit 1
+        fi
+        if [ -z "${can_if}" ]; then
+          echo "返回"
+          return 0
+        fi
+        can_arg="xacro_can_interface:=${can_if}"
+        if [ "${can_if}" = "can1" ]; then
+          mode_label="，左臂 can1"
+        else
+          mode_label="，右臂 can3"
+        fi
       fi
-    fi
 
-    # 臂固定 full_control（不询问 position）
-    mode_label="${mode_label}，臂=full_control"
+      mode_label="${mode_label}，臂=full_control"
 
-    if [ "${ask_lift_mode}" = "1" ]; then
-      local lm_choice lift_motor_mode
-      lm_choice="$(lift_motor_mode_menu)"
-      lift_motor_mode="$(resolve_lift_motor_mode "${lm_choice}")"
-      if [ "${lift_motor_mode}" = "INVALID" ]; then
-        echo -e "${YELLOW}无效选项${NC}"
-        exit 1
+      if [ "${ask_lift_mode}" = "1" ]; then
+        local lm_choice lift_motor_mode
+        lm_choice="$(lift_motor_mode_menu)"
+        lift_motor_mode="$(resolve_lift_motor_mode "${lm_choice}")"
+        if [ "${lift_motor_mode}" = "INVALID" ]; then
+          echo -e "${YELLOW}无效选项${NC}"
+          exit 1
+        fi
+        if [ -z "${lift_motor_mode}" ]; then
+          echo "返回"
+          return 0
+        fi
+        lift_motor_mode_arg="xacro_lift_motor_mode:=${lift_motor_mode}"
+        mode_label="${mode_label}，升降=${lift_motor_mode}"
       fi
-      if [ -z "${lift_motor_mode}" ]; then
-        echo "返回"
-        return 0
-      fi
-      lift_motor_mode_arg="xacro_lift_motor_mode:=${lift_motor_mode}"
-      mode_label="${mode_label}，升降=${lift_motor_mode}"
     fi
   fi
+
+  case "${mode_choice}" in
+    [1-7])
+      save_desc="${description}"
+      if [[ "${description}" != *"+"* ]]; then
+        save_desc="${description} + $(_mode_choice_label "${mode_choice}")${mode_label}"
+      fi
+      _save_launch_last "${save_desc}" "${launch_file}" "${base_args}" \
+        "${mode_choice}" "${ask_arm_side}" "${ask_lift_mode}" \
+        "${can_arg}" "${lift_motor_mode_arg}"
+      ;;
+  esac
 
   case "${mode_choice}" in
     1)
       echo -e "${GREEN}启动${description}（真机${mode_label}）...${NC}"
       ensure_ros_env || exit 1
+      ensure_zenoh_router || exit 1
       print_can_hint
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=real ${can_arg} ${lift_motor_mode_arg}
@@ -220,6 +472,7 @@ do_launch() {
     2)
       echo -e "${GREEN}启动${description}（真机 headless${mode_label}）...${NC}"
       ensure_ros_env || exit 1
+      ensure_zenoh_router || exit 1
       print_can_hint
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=real launch_mode:=control_only ${can_arg} ${lift_motor_mode_arg}
@@ -227,30 +480,35 @@ do_launch() {
     3)
       echo -e "${GREEN}启动${description}（仿真）...${NC}"
       ensure_ros_env || exit 1
+      ensure_zenoh_router || exit 1
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=mock_components
       ;;
     4)
       echo -e "${GREEN}启动${description}（仿真 headless）...${NC}"
       ensure_ros_env || exit 1
+      ensure_zenoh_router || exit 1
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=mock_components launch_mode:=control_only
       ;;
     5)
       echo -e "${GREEN}启动${description}（Isaac）...${NC}"
       ensure_ros_env || exit 1
+      ensure_zenoh_router || exit 1
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=isaac
       ;;
     6)
       echo -e "${GREEN}启动${description}（Isaac headless）...${NC}"
       ensure_ros_env || exit 1
+      ensure_zenoh_router || exit 1
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=isaac launch_mode:=control_only
       ;;
     7)
       echo -e "${GREEN}启动${description}（仅可视化）...${NC}"
       ensure_ros_env || exit 1
+      ensure_zenoh_router || exit 1
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} launch_mode:=rviz_only
       ;;
@@ -291,16 +549,54 @@ build_menu() {
 }
 
 launch_menu() {
+  local last_desc="${1:-}"
+  local base=1 max_opt
+
   echo "" >&2
   echo "请选择启动项:" >&2
-  echo "  1) 单臂 X5 (arx5)" >&2
-  echo "  2) 双臂 ACone (arx_acone)" >&2
-  echo "  3) Lift2S 分体控制 (split_body)" >&2
-  echo "  4) Lift2S 全身控制 (full_body)" >&2
+  if [ -n "${last_desc}" ]; then
+    echo "  1) 使用上次 — ${last_desc}" >&2
+    base=2
+  fi
+  echo "  ${base}) 单臂 X5 (arx5)" >&2
+  echo "  $((base + 1))) 双臂 ACone (arx_acone)" >&2
+  echo "  $((base + 2))) Lift2S 分体控制 (split_body)" >&2
+  echo "  $((base + 3))) Lift2S 全身控制 (full_body)" >&2
+  echo "" >&2
+  echo -e "  ${BLUE}━━━━━━━━━━━━━━━━ 辅助功能 ━━━━━━━━━━━━━━━━${NC}" >&2
+  echo "" >&2
+  echo "  $((base + 4))) 手柄遥操作 (Joystick Teleop)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-4]: " choice
+  max_opt=$((base + 4))
+  read -r -p "请输入选项 [0-${max_opt}]: " choice
   echo "${choice}"
+}
+
+# 解析 launch_menu → last | single | dual | split | full | joystick | back | invalid
+_resolve_launch_menu_choice() {
+  local choice="$1"
+  local offset=0
+  [ -n "${LAST_DESC}" ] && offset=1
+
+  if [ "${choice}" = "0" ]; then
+    echo "back"
+    return 0
+  fi
+  if [ "${offset}" -eq 1 ] && [ "${choice}" = "1" ]; then
+    echo "last"
+    return 0
+  fi
+
+  local idx=$((choice - offset))
+  case "${idx}" in
+    1) echo "single" ;;
+    2) echo "dual" ;;
+    3) echo "split" ;;
+    4) echo "full" ;;
+    5) echo "joystick" ;;
+    *) echo "invalid" ;;
+  esac
 }
 
 launch_mode_menu() {
@@ -383,23 +679,32 @@ case "${top_choice}" in
     ;;
 
   2)
-    launch_choice="$(launch_menu)"
-    case "${launch_choice}" in
-      1)
-        # 单臂：真机时询问左/右 CAN；臂固定 full_control
+    _load_launch_last
+    if [ -n "${LAST_DESC}" ]; then
+      echo -e "${BLUE}[INFO] 上次启动记录: config/launch_last.conf${NC}"
+    fi
+    launch_choice="$(launch_menu "${LAST_DESC}")"
+    launch_action="$(_resolve_launch_menu_choice "${launch_choice}")"
+    case "${launch_action}" in
+      last)
+        _do_last_launch
+        ;;
+      single)
         do_launch "单臂 X5" "ocs2_arm_controller demo.launch.py" "robot:=arx5" "" "1" "0"
         ;;
-      2)
-        # 双臂：can1+can3 固定；不问侧
+      dual)
         do_launch "双臂 ACone" "ocs2_arm_controller demo.launch.py" "robot:=arx_acone" "" "0" "0"
         ;;
-      3)
+      split)
         do_launch "Lift2S 分体控制" "ocs2_arm_controller split_body.launch.py" "robot:=arx_lift2s" "" "0" "1"
         ;;
-      4)
+      full)
         do_launch "Lift2S 全身控制" "ocs2_arm_controller full_body.launch.py" "robot:=arx_lift2s" "" "0" "1"
         ;;
-      0)
+      joystick)
+        do_launch_joystick_teleop
+        ;;
+      back)
         echo "返回"
         ;;
       *)

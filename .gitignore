@@ -25,3 +25,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Local quick_start last-launch record
+config/launch_last.conf
