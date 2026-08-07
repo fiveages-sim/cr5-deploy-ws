@@ -1,5 +1,6 @@
 # ARX Lift2S / ACone 机械臂 ROS2 部署工作空间
 
+![ARX Lift2S](.images/arx_lift2s.jpg)
 
 本仓库用于部署 ARX Lift2S（含升降）与 ACone / X5 机械臂的 ROS 2 工作空间，基于 OCS2 MPC 控制框架。
 
@@ -11,6 +12,7 @@
    - [2.2 之后如何更新子模块](#22-之后如何更新子模块)
    - [2.3 目录结构（节选）](#23-目录结构节选)
    - [2.4 常见问题](#24-常见问题)
+   - [2.5 发布包（`release.sh`）](#25-发布包releasesh)
 3. [环境配置（RMW Zenoh）](#3-环境配置rmw-zenoh)
 4. [编译](#4-编译)
    - [4.1 依赖安装](#41-依赖安装)
@@ -67,6 +69,28 @@ src/
 
 - SSH 权限：确认本机 SSH key 已添加到 GitHub，`ssh -T git@github.com` 可握手。
 - 网络问题：可重试或改用代理；必要时改为 HTTPS 克隆。
+
+### 2.5 发布包（`release.sh`）
+
+机制对齐 [panthera-ht](https://github.com/fiveages-sim/open-deploy-ws/tree/panthera-ht)：核心栈用 deb，描述与真机 HI 保留源码。
+
+**现场：**
+
+```bash
+# 解压 dist/lift2s_ws_*.zip 后
+./release.sh --install    # 装 .deb_cache/（缺包时先 --download）
+./quick_start.sh          # 编译描述 + arx_ros2_control，再启动
+```
+
+**维护者打包（临时目录，不改当前工作区）：**
+
+```bash
+./release.sh --package
+./release.sh --package-no-git --arch amd64
+./release.sh --package-no-git --arch arm64
+```
+
+保留源码：`src/robot-descriptions-arx`、`src/arx-ros2-control`；其余子模块占位，由 `deb_versions.conf` 中的 ocs2 / common / arms deb 提供。更细说明见 [`arx_lift2s_description/README.md`](src/robot-descriptions-arx/arx_lift2s_description/README.md) §5。
 
 ## 3. 环境配置（RMW Zenoh）
 
