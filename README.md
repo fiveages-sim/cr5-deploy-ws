@@ -8,16 +8,14 @@
 
 1. [前置条件](#1-前置条件)
 2. [部署](#2-部署)
-   - [2.1 克隆与子模块](#21-克隆与子模块)
-   - [2.2 之后如何更新子模块](#22-之后如何更新子模块)
-   - [2.3 目录结构（节选）](#23-目录结构节选)
-   - [2.4 常见问题](#24-常见问题)
-   - [2.5 发布包（`release.sh`）](#25-发布包releasesh)
+   - [2.1 方式概览](#21-方式概览)
+   - [2.2 发布包部署（deb，推荐现场）](#22-发布包部署deb推荐现场)
+   - [2.3 完整源码：克隆与子模块](#23-完整源码克隆与子模块)
 3. [环境配置（RMW Zenoh）](#3-环境配置rmw-zenoh)
 4. [编译](#4-编译)
    - [4.1 依赖安装](#41-依赖安装)
    - [4.2 程序编译（推荐：`quick_start.sh`）](#42-程序编译推荐quick_startsh)
-5. [启动（请用 quick_start）](#5-启动请用-quick_start)
+5. [启动（请用 quick_start）](#5-启动请用-quick-start)
    - [5.1 仿真 / 可视化](#51-仿真--可视化)
    - [5.2 真机要点](#52-真机要点)
 6. [子模块说明](#6-子模块说明)
@@ -30,7 +28,102 @@
 
 ## 2. 部署
 
-### 2.1 克隆与子模块
+### 2.1 方式概览
+
+| 方式 | 适用场景 | 主要步骤 |
+|------|----------|----------|
+| **发布包（推荐现场）** | 机器人本体 / 产线，控制器由 deb 提供 | 解压 zip → `release.sh --install` → `quick_start.sh` |
+| **完整源码** | 开发、调试、改控制器栈 | `init_repo.sh` → 编译子模块 → `quick_start.sh` |
+
+发布包内已包含 **`robot-descriptions-arx`、`arx-ros2-control`** 源码，以及预下载的 deb（ocs2、robot-descriptions-common、arms-ros2-control）。其余子模块目录在打包时已清空，由 deb 安装到系统。真机 HI（`arx_ros2_control`）不在 arms deb 内，故随发布包保留源码。
+
+#### 目录结构（节选）
+
+```
+lift2s-ws/
+  ├─ init_repo.sh              # 子模块初始化
+  ├─ release.sh                # deb 安装、发布打包（维护者）
+  ├─ quick_start.sh            # 编译与启动
+  ├─ config/quick_start.conf   # RELEASE_SUBMODULE_PATHS 等
+  ├─ .deb_cache/               # 发布包内预置 deb（解压后安装）
+  └─ src/
+      ├─ robot-descriptions-arx      # 发布包保留源码
+      ├─ arx-ros2-control            # 发布包保留源码（真机 HI）
+      ├─ robot-descriptions-common   # 发布包中由 deb 提供
+      ├─ arms_ros2_control           # 发布包中由 deb 提供
+      └─ ocs2_ros2                   # 发布包中由 deb 提供
+```
+
+完整源码开发时，`arms_ros2_control` / `ocs2_ros2` 下还可有嵌套子模块。
+
+### 2.2 发布包部署（deb，推荐现场）
+
+从维护者处获取 `lift2s-ws_*.zip` 后，在目标机器上：
+
+```bash
+unzip lift2s-ws_*.zip -d ~
+cd ~/lift2s-ws
+
+# 1) 安装预置 deb（需 sudo；若 .deb_cache/ 为空或需更新，先 ./release.sh --download）
+./release.sh --install
+source /opt/ros/jazzy/setup.bash   # 若尚未写入 shell 配置
+
+# 2) 编译工作区内源码，再启动
+./quick_start.sh
+#   Build → 1) 仿真：仅 ARX 描述包
+#         → 2) 真机：描述 + arx_ros2_control（HI）
+#   （已装 arms/ocs2 deb 时自动走上述「deb 模式」，不会再编占位的控制器源码）
+#   Launch → Lift2S 分体 / 全身 等
+```
+
+`release.sh --install` 会按顺序安装 `.deb_cache/` 中的 deb：
+
+1. `ros-jazzy-ocs2`（[legubiao/ocs2_ros2](https://github.com/legubiao/ocs2_ros2/releases)）
+2. `ros-jazzy-robot-descriptions-common`（[fiveages-sim/robot-descriptions-common](https://github.com/fiveages-sim/robot-descriptions-common/releases)）
+3. `ros-jazzy-arms-ros2-control`（[fiveages-sim/arms_ros2_control](https://github.com/fiveages-sim/arms_ros2_control/releases)，standard；不含 arx HI）
+
+现场若需换 deb 通道（默认打包为 **latest**），可：
+
+```bash
+./release.sh --download --release-channel prerelease
+./release.sh --install
+```
+
+#### 部署后更新（git + deb）
+
+发布 zip **包含主仓 `.git`** 时，可在现场拉取脚本与配置；大组件仍通过 deb 更新。
+
+```bash
+cd ~/lift2s-ws
+git pull --ff-only
+git submodule update --init -- src/robot-descriptions-arx src/arx-ros2-control
+./release.sh --download
+./release.sh --install
+./quick_start.sh   # Build → 真机/仿真（deb 模式）后启动
+```
+
+由 deb 提供的子模块目录在发布包中为占位（`.gitkeep`）；若需完整源码开发，见下方 [2.3](#23-完整源码克隆与子模块)。
+
+<details>
+<summary><strong>维护者：生成发布 zip</strong></summary>
+
+在开发机上（需 git、rsync 与网络）。打包在**临时目录**进行，**不修改**当前工作区。保留子模块由 `config/quick_start.conf` → `RELEASE_SUBMODULE_PATHS` 决定（当前为 `robot-descriptions-arx`、`arx-ros2-control`）。
+
+```bash
+cd ~/lift2s-ws
+./release.sh --package                                    # 含 .git，deb 架构=本机，channel=latest
+./release.sh --package-no-git --arch amd64                # 不含 .git，x64
+./release.sh --package-no-git --arch arm64                # 不含 .git，ARM
+./release.sh --package --update-submodules                # 打包时拉取保留子模块最新
+./release.sh --package --release-channel prerelease       # 打入 prerelease deb
+```
+
+产物：`dist/lift2s-ws_<arms版本>_<latest|prerelease>_<架构>[_nogit].zip`。  
+打包时会清空临时 `.deb_cache/` 后只拉取目标架构的对应通道 deb，不会把开发机残留的旧 deb 打进 zip。
+
+</details>
+
+### 2.3 完整源码：克隆与子模块
 
 #### 克隆到 ~/lift2s-ws
 
@@ -48,49 +141,13 @@ cd ~/lift2s-ws
 
 脚本会：同步顶层子模块 → 切到配置分支最新提交 → 初始化 `ocs2_ros2` 嵌套子模块（如有）→ 检查 `arx-ros2-control/external` 依赖。
 
-### 2.2 之后如何更新子模块
+#### 之后如何更新子模块
 
 ```bash
 git submodule update --remote
 ```
 
-### 2.3 目录结构（节选）
 
-```
-src/
-  ├─ arms_ros2_control              # 控制器 / 遥操作 / 公共控制栈
-  ├─ arx-ros2-control               # 真机 HI（包名 arx_ros2_control：臂 + 升降）
-  ├─ ocs2_ros2                      # OCS2 ROS2（含嵌套子模块）
-  ├─ robot-descriptions-arx         # arx5 / arx_acone / arx_lift2s 描述
-  └─ robot-descriptions-common      # 通用 launch / 夹爪等
-```
-
-### 2.4 常见问题
-
-- SSH 权限：确认本机 SSH key 已添加到 GitHub，`ssh -T git@github.com` 可握手。
-- 网络问题：可重试或改用代理；必要时改为 HTTPS 克隆。
-
-### 2.5 发布包（`release.sh`）
-
-机制对齐 [panthera-ht](https://github.com/fiveages-sim/open-deploy-ws/tree/panthera-ht)：核心栈用 deb，描述与真机 HI 保留源码。
-
-**现场：**
-
-```bash
-# 解压 dist/lift2s_ws_*.zip 后
-./release.sh --install    # 装 .deb_cache/（缺包时先 --download）
-./quick_start.sh          # 编译描述 + arx_ros2_control，再启动
-```
-
-**维护者打包（临时目录，不改当前工作区）：**
-
-```bash
-./release.sh --package
-./release.sh --package-no-git --arch amd64
-./release.sh --package-no-git --arch arm64
-```
-
-保留源码：`src/robot-descriptions-arx`、`src/arx-ros2-control`；其余子模块占位，由 `deb_versions.conf` 中的 ocs2 / common / arms deb 提供。更细说明见 [`arx_lift2s_description/README.md`](src/robot-descriptions-arx/arx_lift2s_description/README.md) §5。
 
 ## 3. 环境配置（RMW Zenoh）
 
@@ -129,8 +186,10 @@ chmod +x ./init_repo.sh ./quick_start.sh
 ```
 
 - **`1) 编译 (Build)`**
-  - **`1) 仿真所需包`**：不依赖真机驱动
-  - **`2) 真机所需包`**：编译 `arx_ros2_control` + 描述与控制栈（单臂 / 双臂 / Lift2S 共用）
+  - **`1) 仿真所需包`**：完整源码编控制器+描述；**已装 arms/ocs2 deb（发布包）时只编 ARX 描述**
+  - **`2) 真机所需包`**：完整源码编 `arx_ros2_control`+控制器+描述；**deb 模式只编描述 + `arx_ros2_control`**
+
+包列表见 `config/quick_start.conf`（`BUILD_*` / `BUILD_DEB_*`）。
 
 <details>
 <summary><strong>（可选）手动编译命令</strong></summary>

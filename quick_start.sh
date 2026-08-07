@@ -18,6 +18,79 @@ ARX_HI_DIR="${WS_DIR}/src/arx-ros2-control"
 SDK_DIR="${ARX_HI_DIR}/external/arx5-sdk"
 LIFT_DIR="${ARX_HI_DIR}/external/arx_lift_src"
 
+# 工作区配置（编译包列表 / 发布保留子模块）
+BUILD_SIM_PACKAGES=()
+BUILD_REAL_PACKAGES=()
+BUILD_DEB_PACKAGES=()
+BUILD_DEB_REAL_PACKAGES=()
+QS_CONFIG="${WS_DIR}/config/quick_start.conf"
+if [[ -f "${QS_CONFIG}" ]]; then
+  # shellcheck source=/dev/null
+  source "${QS_CONFIG}"
+fi
+
+# conf 未定义时的回退包列表
+if [[ ${#BUILD_SIM_PACKAGES[@]} -eq 0 ]]; then
+  BUILD_SIM_PACKAGES=(
+    ocs2_arm_controller
+    arx5_description
+    arx_acone_description
+    arx_lift2s_description
+    arms_teleop
+    adaptive_gripper_controller
+    basic_joint_controller
+  )
+fi
+if [[ ${#BUILD_REAL_PACKAGES[@]} -eq 0 ]]; then
+  BUILD_REAL_PACKAGES=(
+    arx_ros2_control
+    ocs2_arm_controller
+    arx5_description
+    arx_acone_description
+    arx_lift2s_description
+    arms_teleop
+    adaptive_gripper_controller
+    basic_joint_controller
+  )
+fi
+if [[ ${#BUILD_DEB_PACKAGES[@]} -eq 0 ]]; then
+  BUILD_DEB_PACKAGES=(
+    arx5_description
+    arx_acone_description
+    arx_lift2s_description
+  )
+fi
+if [[ ${#BUILD_DEB_REAL_PACKAGES[@]} -eq 0 ]]; then
+  BUILD_DEB_REAL_PACKAGES=(
+    arx_ros2_control
+    arx5_description
+    arx_acone_description
+    arx_lift2s_description
+  )
+fi
+
+# 核心栈由 deb 提供（发布包现场）：系统已装 arms，或工作区无控制器源码
+_pkg_installed() {
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"
+}
+
+core_deb_mode() {
+  if _pkg_installed "ros-jazzy-arms-ros2-control" \
+    || _pkg_installed "ros-jazzy-arms-ros2-control-full"; then
+    return 0
+  fi
+  # 发布包占位：目录在但无 arms 控制器源码树
+  if [ -d "${WS_DIR}/src/arms_ros2_control" ] \
+    && [ ! -d "${WS_DIR}/src/arms_ros2_control/controller" ] \
+    && [ ! -d "${WS_DIR}/src/arms_ros2_control/command" ]; then
+    return 0
+  fi
+  if [ ! -d "${WS_DIR}/src/arms_ros2_control" ] && [ ! -d "${WS_DIR}/src/ocs2_ros2" ]; then
+    return 0
+  fi
+  return 1
+}
+
 need_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -45,7 +118,11 @@ ensure_ros_env() {
     return 0
   fi
   echo -e "${YELLOW}[WARN] 未找到 ${WS_DIR}/install/setup.bash${NC}"
-  echo -e "${YELLOW}      请先选择「编译」生成 install/，再启动。${NC}"
+  if core_deb_mode; then
+    echo -e "${YELLOW}      deb 已提供核心控制栈；请先：./quick_start.sh → 1) 编译（将只编描述 / 真机 HI）${NC}"
+  else
+    echo -e "${YELLOW}      请先选择「编译」生成 install/，再启动。${NC}"
+  fi
   return 1
 }
 
@@ -540,12 +617,37 @@ menu() {
 build_menu() {
   echo "" >&2
   echo "请选择编译目标:" >&2
+  if core_deb_mode; then
+    echo -e "  ${BLUE}（已检测核心包 deb / 发布包模式：只编工作区内描述与 HI）${NC}" >&2
+  fi
   echo "  1) 编译仿真所需包 (Simulation)" >&2
   echo "  2) 编译真机所需包 (Real — arx_ros2_control + 描述)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
   read -r -p "请输入选项 [0-2]: " choice
   echo "${choice}"
+}
+
+run_colcon_build() {
+  cd "${WS_DIR}" || exit 1
+  source_ros_underlay || true
+  colcon build "$@"
+}
+
+# 按包列表 --packages-up-to ... --symlink-install
+run_colcon_packages_up_to() {
+  local -a pkgs=("$@")
+  local pkg_args=()
+  local p
+  for p in "${pkgs[@]}"; do
+    [ -n "${p}" ] || continue
+    pkg_args+=("${p}")
+  done
+  if [ "${#pkg_args[@]}" -eq 0 ]; then
+    echo -e "${RED}[ERROR] 编译包列表为空${NC}"
+    return 1
+  fi
+  run_colcon_build --packages-up-to "${pkg_args[@]}" --symlink-install
 }
 
 launch_menu() {
@@ -615,12 +717,6 @@ launch_mode_menu() {
   echo "${choice}"
 }
 
-run_colcon_build() {
-  cd "${WS_DIR}" || exit 1
-  source_ros_underlay || true
-  colcon build "$@"
-}
-
 need_cmd git || exit 1
 need_cmd colcon || echo -e "${YELLOW}[WARN] 未找到 colcon，编译选项会失败。${NC}"
 
@@ -632,37 +728,35 @@ case "${top_choice}" in
     case "${build_choice}" in
       1)
         echo -e "${GREEN}开始编译仿真所需包...${NC}"
-        if ! run_colcon_build --packages-up-to \
-          ocs2_arm_controller \
-          arx_acone_description \
-          arx_lift2s_description \
-          component_models \
-          arx5_description \
-          arms_teleop \
-          adaptive_gripper_controller \
-          basic_joint_controller \
-          --symlink-install; then
-          echo -e "${YELLOW}编译过程中出现错误${NC}"
-          exit 1
+        if core_deb_mode; then
+          echo -e "${BLUE}  模式: 核心包 deb + 仅编译 ARX 描述包${NC}"
+          if ! run_colcon_packages_up_to "${BUILD_DEB_PACKAGES[@]}"; then
+            echo -e "${YELLOW}编译过程中出现错误${NC}"
+            exit 1
+          fi
+        else
+          if ! run_colcon_packages_up_to "${BUILD_SIM_PACKAGES[@]}"; then
+            echo -e "${YELLOW}编译过程中出现错误${NC}"
+            exit 1
+          fi
         fi
         echo -e "${GREEN}编译完成！${NC}"
         ;;
       2)
-        echo -e "${GREEN}开始编译真机所需包（arx_ros2_control）...${NC}"
-        ensure_arx_hi_external || exit 1
-        if ! run_colcon_build --packages-up-to \
-          arx_ros2_control \
-          ocs2_arm_controller \
-          arx_acone_description \
-          arx_lift2s_description \
-          component_models \
-          arx5_description \
-          arms_teleop \
-          adaptive_gripper_controller \
-          basic_joint_controller \
-          --symlink-install; then
-          echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
-          exit 1
+        echo -e "${GREEN}开始编译真机所需包...${NC}"
+        if core_deb_mode; then
+          echo -e "${BLUE}  模式: 核心包 deb + 编译描述与 arx_ros2_control（HI）${NC}"
+          ensure_arx_hi_external || exit 1
+          if ! run_colcon_packages_up_to "${BUILD_DEB_REAL_PACKAGES[@]}"; then
+            echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
+            exit 1
+          fi
+        else
+          ensure_arx_hi_external || exit 1
+          if ! run_colcon_packages_up_to "${BUILD_REAL_PACKAGES[@]}"; then
+            echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
+            exit 1
+          fi
         fi
         echo -e "${GREEN}编译完成！${NC}"
         echo -e "${BLUE}启动：单臂可选左/右 CAN；臂仅 full_control；升降可选 hybrid/soft_p${NC}"
