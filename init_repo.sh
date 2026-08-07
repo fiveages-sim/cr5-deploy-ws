@@ -1,8 +1,6 @@
 #!/bin/bash
 
 # ARX Lift2S / ACone ROS2 部署工作空间初始化脚本
-# 架构对齐：https://github.com/fiveages-sim/open-deploy-ws/tree/panthera-ht
-# 风格参考：dobot-cr5 / main
 #
 # 顶层子模块：
 #   arms_ros2_control / arx-ros2-control / ocs2_ros2 /

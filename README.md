@@ -2,7 +2,6 @@
 
 本仓库用于部署 ARX Lift2S（含升降）与 ACone / X5 机械臂的 ROS 2 工作空间，基于 OCS2 MPC 控制框架。
 
-架构参考：[open-deploy-ws panthera-ht](https://github.com/fiveages-sim/open-deploy-ws/tree/panthera-ht)、[dobot-cr5](https://github.com/fiveages-sim/open-deploy-ws/tree/dobot-cr5)、[main](https://github.com/fiveages-sim/open-deploy-ws/tree/main)。
 
 ### 前置条件
 - 已配置 Git SSH 密钥并可访问相关私有仓库
@@ -145,7 +144,7 @@ ros2 launch robot_common_launch manipulator.launch.py robot:=arx_lift2s
 **升降（仅 Lift2S）**
 
 - `hybrid`（默认）：`sendLiftHybrid`，跟踪 pos+vel，HI 重力/摩擦前馈。
-- `soft_p` / `position`：Soft-P `setHeight`，仅跟踪 position（功能保留）。
+- `soft_p` / `position`：Soft-P `setHeight`，仅跟踪 position。
 
 ```bash
 ./quick_start.sh
