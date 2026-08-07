@@ -1,23 +1,44 @@
 # ARX Lift2S / ACone 机械臂 ROS2 部署工作空间
 
+
 本仓库用于部署 ARX Lift2S（含升降）与 ACone / X5 机械臂的 ROS 2 工作空间，基于 OCS2 MPC 控制框架。
 
+## 目录
 
-### 前置条件
+1. [前置条件](#1-前置条件)
+2. [部署](#2-部署)
+   - [2.1 克隆与子模块](#21-克隆与子模块)
+   - [2.2 之后如何更新子模块](#22-之后如何更新子模块)
+   - [2.3 目录结构（节选）](#23-目录结构节选)
+   - [2.4 常见问题](#24-常见问题)
+3. [环境配置（RMW Zenoh）](#3-环境配置rmw-zenoh)
+4. [编译](#4-编译)
+   - [4.1 依赖安装](#41-依赖安装)
+   - [4.2 程序编译（推荐：`quick_start.sh`）](#42-程序编译推荐quick_startsh)
+5. [启动（请用 quick_start）](#5-启动请用-quick_start)
+   - [5.1 仿真 / 可视化](#51-仿真--可视化)
+   - [5.2 真机要点](#52-真机要点)
+6. [子模块说明](#6-子模块说明)
+
+## 1. 前置条件
+
 - 已配置 Git SSH 密钥并可访问相关私有仓库
 - 系统已安装 Git（建议 2.30+）
 - ROS 2 Jazzy（Ubuntu 24.04）
 
-## 1. 仓库初始化
+## 2. 部署
 
-### 克隆到 ~/lift2s-ws
+### 2.1 克隆与子模块
+
+#### 克隆到 ~/lift2s-ws
+
 ```bash
 cd ~
 git clone git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws
 cd ~/lift2s-ws
 ```
 
-### 初始化并更新子模块
+#### 初始化并更新子模块
 
 ```bash
 ./init_repo.sh
@@ -25,12 +46,14 @@ cd ~/lift2s-ws
 
 脚本会：同步顶层子模块 → 切到配置分支最新提交 → 初始化 `ocs2_ros2` 嵌套子模块（如有）→ 检查 `arx-ros2-control/external` 依赖。
 
-### 之后如何更新子模块
+### 2.2 之后如何更新子模块
+
 ```bash
 git submodule update --remote
 ```
 
-### 目录结构（节选）
+### 2.3 目录结构（节选）
+
 ```
 src/
   ├─ arms_ros2_control              # 控制器 / 遥操作 / 公共控制栈
@@ -40,11 +63,12 @@ src/
   └─ robot-descriptions-common      # 通用 launch / 夹爪等
 ```
 
-### 常见问题
+### 2.4 常见问题
+
 - SSH 权限：确认本机 SSH key 已添加到 GitHub，`ssh -T git@github.com` 可握手。
 - 网络问题：可重试或改用代理；必要时改为 HTTPS 克隆。
 
-## 2. 安装 RMW Zenoh C++
+## 3. 环境配置（RMW Zenoh）
 
 部署机器建议使用 RMW Zenoh，避免局域网 DDS 互相污染。
 
@@ -62,15 +86,16 @@ src/
   - 推荐：`./quick_start.sh` → Launch（会自动预启 router）
   - 手动 `ros2 launch` 时先另开终端：`ros2 run rmw_zenoh_cpp rmw_zenohd`
 
-## 3. 程序编译与启动
+## 4. 编译
 
-### 3.1 依赖安装
+### 4.1 依赖安装
+
 ```bash
 cd ~/lift2s-ws
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
-### 3.2 程序编译（推荐：`quick_start.sh`）
+### 4.2 程序编译（推荐：`quick_start.sh`）
 
 ```bash
 cd ~/lift2s-ws
@@ -114,7 +139,9 @@ colcon build --packages-up-to \
 
 </details>
 
-### 3.3 仿真 / 可视化
+## 5. 启动（请用 quick_start）
+
+### 5.1 仿真 / 可视化
 
 ```bash
 source ~/lift2s-ws/install/setup.bash
@@ -133,7 +160,7 @@ ros2 launch robot_common_launch manipulator.launch.py robot:=arx_lift2s
 
 运行模式：真机 / 真机 headless / 仿真 / 仿真 headless / Isaac / Isaac headless / 仅可视化。
 
-### 3.4 真机要点
+### 5.2 真机要点
 
 **臂控制模式：仅 `full_control`（MIT MIX）**
 
@@ -174,7 +201,7 @@ ros2 launch ocs2_arm_controller full_body.launch.py robot:=arx_lift2s hardware:=
 
 </details>
 
-## 4. 子模块说明
+## 6. 子模块说明
 
 - **arms_ros2_control** — 机械臂通用 ROS2 控制（OCS2 控制器、遥操作等）
 - **arx-ros2-control** — Lift2S / ACone / X5 真机硬件接口（`ArxX5Hardware` + `ArxLiftHardware`）
