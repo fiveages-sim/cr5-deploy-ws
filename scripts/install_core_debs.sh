@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 快速模式：从 GitHub Release 下载并安装 ocs2 / common / arms_ros2_control(-full) deb 包
-# 本工作空间默认 arms standard；可用 --arms-variant full 切换（仍不含 arx_ros2_control）
+# 快速模式：从 GitHub Release 下载并安装 ocs2 / common / arms_ros2_control-full deb 包
+# 默认 arms-full（含 arx_ros2_control HI）；可用 --arms-variant standard 切换
 
 set -uo pipefail
 
@@ -21,9 +21,10 @@ fi
 # shellcheck disable=SC1090
 . "${LIB_DEB_COMMON}"
 
-# arms 变体：full（ros-jazzy-arms-ros2-control-full）| standard（ros-jazzy-arms-ros2-control）
+# arms 变体：full（ros-jazzy-arms-ros2-control-full，默认）| standard（ros-jazzy-arms-ros2-control）
 # 空 = 未指定，沿用 deb_versions.conf 中的前缀
-ARMS_VARIANT=""
+ARMS_VARIANT="${ARMS_VARIANT:-full}"
+CACHE_ONLY=0
 
 # 解析 arms 变体对应的有效前缀（--arms-variant 覆盖 conf 中的前缀，不修改 deb_versions.conf）
 resolve_effective_prefix() {
@@ -66,12 +67,12 @@ usage() {
   cat <<EOF
 用法: install_core_debs.sh [--ros-distro <distro>] [--config <file>]
                           [--only <list>] [--channel <latest|pre-release>]
-                          [--arms-variant <full|standard>]
+                          [--arms-variant <full|standard>] [--cache-only]
 
 从 deb_versions.conf 读取仓库信息，按依赖顺序安装核心 deb 包：
   1. ros-jazzy-ocs2
   2. ros-jazzy-robot-descriptions-common
-  3. ros-jazzy-arms-ros2-control（控制器栈；真机 HI 用 src/arx-ros2-control）
+  3. ros-jazzy-arms-ros2-control-full（默认，含 arx_ros2_control 等 HI）
 
   --only <list>     仅安装指定包，逗号分隔。可用短名：ocs2, common, arms
   --channel <name>  发布通道（覆盖 conf 中的固定 tag）：
@@ -80,8 +81,9 @@ usage() {
                     未指定时按 conf 中的 tag 安装。
   --arms-variant <full|standard>
                     arms deb 变体（覆盖 deb_versions.conf 中的前缀，不修改配置）：
-                    standard   ros-jazzy-arms-ros2-control（默认）
-                    full       ros-jazzy-arms-ros2-control-full（含 ht 等，仍不含 arx）
+                    full       ros-jazzy-arms-ros2-control-full（默认，含 arx_ros2_control）
+                    standard   ros-jazzy-arms-ros2-control（须源码 init arx-ros2-control）
+  --cache-only      仅下载 deb 到 .deb_cache/，不 apt 安装（供 release.sh --download 使用）
 
 也可通过环境变量 LIFT2S_DEB_CHANNEL 或 HT_DEB_CHANNEL=latest|pre-release 指定。
 安装使用 apt-get install，自动处理依赖。
@@ -116,6 +118,10 @@ while [[ $# -gt 0 ]]; do
           ;;
       esac
       shift 2
+      ;;
+    --cache-only)
+      CACHE_ONLY=1
+      shift
       ;;
     --only)
       IFS=',' read -ra _only_tokens <<< "$2"
@@ -625,6 +631,12 @@ for spec in "${DEB_SPECS[@]}"; do
   if [[ "$eff_prefix" == "ros-jazzy-arms-ros2-control" || "$eff_prefix" == "ros-jazzy-arms-ros2-control-full" ]]; then
     prepare_arms_variant_install "$eff_prefix"
   fi
+  if [[ "$CACHE_ONLY" -eq 1 ]]; then
+    print_info "  已缓存: $(basename "$deb_path")（--cache-only，跳过 apt 安装）"
+    installed+=("$eff_prefix")
+    echo "" >&2
+    continue
+  fi
   install_deb "$deb_path" || {
     print_error "安装 ${eff_prefix} 失败"
     exit 1
@@ -634,7 +646,11 @@ for spec in "${DEB_SPECS[@]}"; do
 done
 
 print_info "=========================================="
-print_info "核心 deb 包安装完成："
+if [[ "$CACHE_ONLY" -eq 1 ]]; then
+  print_info "核心 deb 已下载到 ${DOWNLOAD_DIR}："
+else
+  print_info "核心 deb 包安装完成："
+fi
 for pkg in "${installed[@]}"; do
   print_info "  ✓ ${pkg}"
 done

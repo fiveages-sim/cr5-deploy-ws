@@ -8,13 +8,13 @@ ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 DEB_CACHE_DIR="${DEB_CACHE_DIR:-${WS_DIR}/.deb_cache}"
 
 # owner/repo|显示名|deb 文件名前缀（匹配 ${prefix}_*_${arch}.deb）
-# Lift2S：arms 用 standard（不含厂商 HI）；真机 HI 见发布包内 src/arx-ros2-control 源码
+# Lift2S：arms-full（含 arx_ros2_control HI）；版本/tag 以 deb_versions.conf 为准（release.sh）
 DEB_RELEASE_SOURCES=(
   "legubiao/ocs2_ros2|ocs2_ros2|ros-${ROS_DISTRO}-ocs2"
   "fiveages-sim/robot-descriptions-common|robot-descriptions-common|ros-${ROS_DISTRO}-robot-descriptions-common"
-  "fiveages-sim/arms_ros2_control|arms-ros2-control|ros-${ROS_DISTRO}-arms-ros2-control"
+  "fiveages-sim/arms_ros2_control|arms-ros2-control-full|ros-${ROS_DISTRO}-arms-ros2-control-full"
 )
-ARMS_ROS2_CONTROL_DEB_PREFIX="ros-${ROS_DISTRO}-arms-ros2-control"
+ARMS_ROS2_CONTROL_DEB_PREFIX="ros-${ROS_DISTRO}-arms-ros2-control-full"
 
 _deb_cache_warn() {
   if declare -F print_warn >/dev/null 2>&1; then

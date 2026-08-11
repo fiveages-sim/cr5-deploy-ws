@@ -91,6 +91,18 @@ core_deb_mode() {
   return 1
 }
 
+# arms-full 已提供 arx_ros2_control，真机编译无需再编该包
+arx_from_deb() {
+  _pkg_installed "ros-jazzy-arms-ros2-control-full"
+}
+
+warn_hi_overlay_conflict() {
+  if arx_from_deb && [ -d "${WS_DIR}/install/arx_ros2_control" ]; then
+    echo -e "${YELLOW}[WARN] 检测到 install/arx_ros2_control，可能遮住 arms-full deb 中的 HI 插件${NC}"
+    echo -e "${YELLOW}      建议删除该目录后重新 source，再只编译描述包${NC}"
+  fi
+}
+
 need_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -618,7 +630,12 @@ build_menu() {
   echo "" >&2
   echo "请选择编译目标:" >&2
   if core_deb_mode; then
-    echo -e "  ${BLUE}（已检测核心包 deb / 发布包模式：只编工作区内描述与 HI）${NC}" >&2
+    echo -e "  ${BLUE}（已检测核心包 deb / 发布包模式）${NC}" >&2
+    if arx_from_deb; then
+      echo -e "  ${BLUE}  arms-full 含 arx_ros2_control：仿真/真机均只编 ARX 描述包${NC}" >&2
+    else
+      echo -e "  ${BLUE}  arms-standard：真机须额外编译 arx_ros2_control（源码 HI）${NC}" >&2
+    fi
   fi
   echo "  1) 编译仿真所需包 (Simulation)" >&2
   echo "  2) 编译真机所需包 (Real — arx_ros2_control + 描述)" >&2
@@ -729,6 +746,7 @@ case "${top_choice}" in
       1)
         echo -e "${GREEN}开始编译仿真所需包...${NC}"
         if core_deb_mode; then
+          warn_hi_overlay_conflict
           echo -e "${BLUE}  模式: 核心包 deb + 仅编译 ARX 描述包${NC}"
           if ! run_colcon_packages_up_to "${BUILD_DEB_PACKAGES[@]}"; then
             echo -e "${YELLOW}编译过程中出现错误${NC}"
@@ -745,11 +763,21 @@ case "${top_choice}" in
       2)
         echo -e "${GREEN}开始编译真机所需包...${NC}"
         if core_deb_mode; then
-          echo -e "${BLUE}  模式: 核心包 deb + 编译描述与 arx_ros2_control（HI）${NC}"
-          ensure_arx_hi_external || exit 1
-          if ! run_colcon_packages_up_to "${BUILD_DEB_REAL_PACKAGES[@]}"; then
-            echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
-            exit 1
+          warn_hi_overlay_conflict
+          if arx_from_deb; then
+            echo -e "${BLUE}  模式: 核心包 deb(arms-full 含 arx_ros2_control) + 仅编译 ARX 描述包${NC}"
+            if ! run_colcon_packages_up_to "${BUILD_DEB_REAL_PACKAGES[@]}"; then
+              echo -e "${YELLOW}编译过程中出现错误${NC}"
+              exit 1
+            fi
+          else
+            echo -e "${BLUE}  模式: 核心包 deb(standard) + 编译描述与 arx_ros2_control（源码 HI）${NC}"
+            ensure_arx_hi_external || exit 1
+            local -a real_pkgs=("${BUILD_DEB_REAL_PACKAGES[@]}" arx_ros2_control)
+            if ! run_colcon_packages_up_to "${real_pkgs[@]}"; then
+              echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
+              exit 1
+            fi
           fi
         else
           ensure_arx_hi_external || exit 1
