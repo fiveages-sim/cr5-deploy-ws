@@ -399,6 +399,33 @@ ros2 topic pub -1 /left_target geometry_msgs/msg/Pose   "{position: {x: 0.30, y:
 ros2 topic pub -1 /left_current_target geometry_msgs/msg/Pose   "{header: {frame_id: 'base_lros2 topic pub -1 /left_target geometry_msgs/msg/Pose   "{position: {x: 0.30, y: 0.35, z: 0.35}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}"
 ```
 
+#### 速度指令话题（末端速度控制）
+
+| 话题 | 消息类型 | 作用 |
+|------|----------|------|
+| `/left_target/twist` | `geometry_msgs/msg/Twist` | 左臂末端**速度指令**：`linear` 单位 m/s、`angular` 单位 rad/s，按 `base_link` 坐标系解释。控制器订阅后 latch，并在每个控制周期（默认 500Hz）积分成目标位姿由 OCS2 MPC 跟踪 |
+| `/right_target/twist` | `geometry_msgs/msg/Twist` | 右臂末端速度指令（双臂模式），同上 |
+| `/left_target/relative` | `geometry_msgs/msg/TwistStamped` | 左臂**一次相对位移 + moveL 插值**。`header.frame_id` 可为任意坐标系（默认 `base_link`），自动 TF 变换后作为单次 moveL 目标执行 |
+| `/right_target/relative` | `geometry_msgs/msg/TwistStamped` | 右臂（双臂模式），同上 |
+
+- 速度指令**适合连续匀速/平滑运动**，可随时叠加修改方向与大小；`*_target/relative` 适合单步相对位移。
+- 安全机制：twist 发布全零（或 **0.2s 无新消息**）后机械臂自动停止，不会继续运动。
+- 前提：同样需要控制器处于 **OCS2(3)** 状态（见 3.1）。
+
+示例：
+```bash
+# 切到 OCS2 状态
+ros2 topic pub -1 /fsm_command std_msgs/msg/Int32 "{data: 3}"
+
+# 末端沿 base_link x 方向以 0.1 m/s 匀速运动（需持续发布，否则 0.2s 后停止）
+ros2 topic pub --rate 50 /left_target/twist geometry_msgs/msg/Twist \
+  "{linear: {x: 0.1, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
+
+# 停止（发布一次全零即可）
+ros2 topic pub -1 /left_target/twist geometry_msgs/msg/Twist \
+  "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
+```
+
 
 ### 3.3 增量控制（手柄/键盘式）
 
