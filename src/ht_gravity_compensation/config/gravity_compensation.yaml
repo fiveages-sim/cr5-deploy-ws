@@ -1,0 +1,48 @@
+# ht_gravity_compensation 控制器配置（双臂 Panthera HT）
+#
+# 本文件为 controller_manager 与重力补偿控制器的完整参数。
+# 启动入口：launch/gravity_compensation.launch.py（会按 type/hardware 覆盖 joints 等参数）。
+
+controller_manager:
+  ros__parameters:
+    update_rate: 500  # Hz，与描述包 dual.yaml 保持一致
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    gravity_compensation_controller:
+      type: ht_gravity_compensation/GravityCompensationController
+
+gravity_compensation_controller:
+  ros__parameters:
+    # 重力补偿关节（12 个臂关节，URDF 顺序）
+    joints:
+      - left_joint1
+      - left_joint2
+      - left_joint3
+      - left_joint4
+      - left_joint5
+      - left_joint6
+      - right_joint1
+      - right_joint2
+      - right_joint3
+      - right_joint4
+      - right_joint5
+      - right_joint6
+    # 仅位置保持关节（夹爪平移关节，无电机力矩接口）
+    hold_joints:
+      - left_gripper_joint
+      - right_gripper_joint
+    # 写 kp/kd 命令接口（软刚度悬停 + 重力前馈）。
+    # 仅当硬件导出 kp/kd（真机 ht_ros2_control full_control）时可用；
+    # mock_components 等无 kp/kd 接口的硬件必须置 false（launch 会自动处理）。
+    use_pd: true
+    hold_kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+    hold_kd: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+    # 力矩限幅（Nm），与 interfaces.xacro 的 max_torque 一致；留空则不限幅
+    max_effort: [21.0, 36.0, 36.0, 21.0, 10.0, 10.0,
+                 21.0, 36.0, 36.0, 21.0, 10.0, 10.0]
+    # 世界系重力加速度（双臂 body_rpy 非零时需按安装方向旋转）
+    gravity_vector: [0.0, 0.0, -9.81]
+    # URDF 来源参数（controller_manager 注入 / /controller_manager 参数）
+    urdf_param: robot_description
