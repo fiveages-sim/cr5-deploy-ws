@@ -19,10 +19,11 @@ SDK_DIR="${ARX_HI_DIR}/external/arx5-sdk"
 LIFT_DIR="${ARX_HI_DIR}/external/arx_lift_src"
 
 # 工作区配置（编译包列表 / 发布保留子模块）
-BUILD_SIM_PACKAGES=()
-BUILD_REAL_PACKAGES=()
-BUILD_DEB_PACKAGES=()
-BUILD_DEB_REAL_PACKAGES=()
+BUILD_LIFT2S_SIM_PACKAGES=()
+BUILD_LIFT2S_REAL_PACKAGES=()
+BUILD_ALL_SIM_PACKAGES=()
+BUILD_DEB_LIFT2S_PACKAGES=()
+BUILD_DEB_ALL_PACKAGES=()
 QS_CONFIG="${WS_DIR}/config/quick_start.conf"
 if [[ -f "${QS_CONFIG}" ]]; then
   # shellcheck source=/dev/null
@@ -30,10 +31,11 @@ if [[ -f "${QS_CONFIG}" ]]; then
 fi
 
 # conf 未定义时的回退包列表
-if [[ ${#BUILD_SIM_PACKAGES[@]} -eq 0 ]]; then
-  BUILD_SIM_PACKAGES=(
+if [[ ${#BUILD_LIFT2S_SIM_PACKAGES[@]} -eq 0 ]]; then
+  BUILD_LIFT2S_SIM_PACKAGES=(
     ocs2_arm_controller
-    arx5_description
+    ocs2_wbc_controller
+    topic_based_ros2_control
     arx_acone_description
     arx_lift2s_description
     arms_teleop
@@ -41,11 +43,11 @@ if [[ ${#BUILD_SIM_PACKAGES[@]} -eq 0 ]]; then
     basic_joint_controller
   )
 fi
-if [[ ${#BUILD_REAL_PACKAGES[@]} -eq 0 ]]; then
-  BUILD_REAL_PACKAGES=(
+if [[ ${#BUILD_LIFT2S_REAL_PACKAGES[@]} -eq 0 ]]; then
+  BUILD_LIFT2S_REAL_PACKAGES=(
     arx_ros2_control
     ocs2_arm_controller
-    arx5_description
+    ocs2_wbc_controller
     arx_acone_description
     arx_lift2s_description
     arms_teleop
@@ -53,19 +55,34 @@ if [[ ${#BUILD_REAL_PACKAGES[@]} -eq 0 ]]; then
     basic_joint_controller
   )
 fi
-if [[ ${#BUILD_DEB_PACKAGES[@]} -eq 0 ]]; then
-  BUILD_DEB_PACKAGES=(
+if [[ ${#BUILD_ALL_SIM_PACKAGES[@]} -eq 0 ]]; then
+  BUILD_ALL_SIM_PACKAGES=(
+    ocs2_arm_controller
+    ocs2_wbc_controller
+    topic_based_ros2_control
     arx5_description
+    arx_acone_description
+    arx_lift_description
+    arx_lift2s_description
+    arx_x7s_description
+    arms_teleop
+    adaptive_gripper_controller
+    basic_joint_controller
+  )
+fi
+if [[ ${#BUILD_DEB_LIFT2S_PACKAGES[@]} -eq 0 ]]; then
+  BUILD_DEB_LIFT2S_PACKAGES=(
     arx_acone_description
     arx_lift2s_description
   )
 fi
-if [[ ${#BUILD_DEB_REAL_PACKAGES[@]} -eq 0 ]]; then
-  BUILD_DEB_REAL_PACKAGES=(
-    arx_ros2_control
+if [[ ${#BUILD_DEB_ALL_PACKAGES[@]} -eq 0 ]]; then
+  BUILD_DEB_ALL_PACKAGES=(
     arx5_description
     arx_acone_description
+    arx_lift_description
     arx_lift2s_description
+    arx_x7s_description
   )
 fi
 
@@ -306,33 +323,164 @@ resolve_lift_motor_mode() {
   esac
 }
 
-# ==================== 上次启动记录（方案 A：完整复现） ====================
+# ==================== 最近启动记录（最多 3 条不同配置，MRU） ====================
 QS_LAST_LAUNCH_FILE="${WS_DIR}/config/launch_last.conf"
+QS_LAST_LAUNCH_MAX=3
+
+# 指纹：launch + 参数 + 运行模式 + CAN/升降（用于去重）
+_launch_fingerprint() {
+  printf '%s\t%s\t%s\t%s\t%s' "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}"
+}
+
+_clear_launch_history_vars() {
+  local i
+  unset LAST_COUNT LAST_DESC
+  for i in 0 1 2; do
+    unset "LAST_DESC_${i}" "LAST_LAUNCH_FILE_${i}" "LAST_BASE_ARGS_${i}" \
+      "LAST_MODE_CHOICE_${i}" "LAST_ASK_ARM_SIDE_${i}" "LAST_ASK_LIFT_MODE_${i}" \
+      "LAST_CAN_ARG_${i}" "LAST_LIFT_MODE_ARG_${i}"
+  done
+  unset LAST_LAUNCH_FILE LAST_BASE_ARGS LAST_MODE_CHOICE \
+    LAST_ASK_ARM_SIDE LAST_ASK_LIFT_MODE LAST_CAN_ARG LAST_LIFT_MODE_ARG
+}
+
+_load_launch_last() {
+  _clear_launch_history_vars
+  LAST_COUNT=0
+  LAST_DESC=""
+  if [ ! -f "${QS_LAST_LAUNCH_FILE}" ]; then
+    return 0
+  fi
+  # shellcheck disable=SC1090
+  source "${QS_LAST_LAUNCH_FILE}" 2>/dev/null || true
+
+  # 兼容旧版单条 LAST_*（无下标字段）
+  if [ -n "${LAST_LAUNCH_FILE:-}" ] && [ -z "${LAST_LAUNCH_FILE_0:-}" ]; then
+    LAST_COUNT=1
+    LAST_DESC_0="${LAST_DESC:-}"
+    LAST_LAUNCH_FILE_0="${LAST_LAUNCH_FILE}"
+    LAST_BASE_ARGS_0="${LAST_BASE_ARGS:-}"
+    LAST_MODE_CHOICE_0="${LAST_MODE_CHOICE:-}"
+    LAST_ASK_ARM_SIDE_0="${LAST_ASK_ARM_SIDE:-0}"
+    LAST_ASK_LIFT_MODE_0="${LAST_ASK_LIFT_MODE:-0}"
+    LAST_CAN_ARG_0="${LAST_CAN_ARG:-}"
+    LAST_LIFT_MODE_ARG_0="${LAST_LIFT_MODE_ARG:-}"
+  fi
+
+  if [ -z "${LAST_COUNT:-}" ] || ! [[ "${LAST_COUNT}" =~ ^[0-9]+$ ]]; then
+    LAST_COUNT=0
+  fi
+  if [ "${LAST_COUNT}" -gt "${QS_LAST_LAUNCH_MAX}" ]; then
+    LAST_COUNT="${QS_LAST_LAUNCH_MAX}"
+  fi
+  LAST_DESC="${LAST_DESC_0:-}"
+}
+
+_write_launch_history() {
+  local f="${QS_LAST_LAUNCH_FILE}"
+  local i n="${LAST_COUNT:-0}"
+  local desc launch_file base_args mode_choice ask_arm ask_lift can_arg lift_arg
+  mkdir -p "$(dirname "${f}")"
+  {
+    printf 'LAST_COUNT=%q\n' "${n}"
+    for ((i = 0; i < n; i++)); do
+      desc="LAST_DESC_${i}"
+      launch_file="LAST_LAUNCH_FILE_${i}"
+      base_args="LAST_BASE_ARGS_${i}"
+      mode_choice="LAST_MODE_CHOICE_${i}"
+      ask_arm="LAST_ASK_ARM_SIDE_${i}"
+      ask_lift="LAST_ASK_LIFT_MODE_${i}"
+      can_arg="LAST_CAN_ARG_${i}"
+      lift_arg="LAST_LIFT_MODE_ARG_${i}"
+      printf 'LAST_DESC_%d=%q\n' "${i}" "${!desc:-}"
+      printf 'LAST_LAUNCH_FILE_%d=%q\n' "${i}" "${!launch_file:-}"
+      printf 'LAST_BASE_ARGS_%d=%q\n' "${i}" "${!base_args:-}"
+      printf 'LAST_MODE_CHOICE_%d=%q\n' "${i}" "${!mode_choice:-}"
+      printf 'LAST_ASK_ARM_SIDE_%d=%q\n' "${i}" "${!ask_arm:-0}"
+      printf 'LAST_ASK_LIFT_MODE_%d=%q\n' "${i}" "${!ask_lift:-0}"
+      printf 'LAST_CAN_ARG_%d=%q\n' "${i}" "${!can_arg:-}"
+      printf 'LAST_LIFT_MODE_ARG_%d=%q\n' "${i}" "${!lift_arg:-}"
+    done
+  } > "${f}"
+}
 
 _save_launch_last() {
   # $1=desc $2=launch_file $3=base_args $4=mode_choice
   # $5=ask_arm_side $6=ask_lift_mode $7=can_arg $8=lift_motor_mode_arg
-  local f="${QS_LAST_LAUNCH_FILE}"
-  mkdir -p "$(dirname "${f}")"
-  {
-    printf 'LAST_DESC=%q\n' "${1:-}"
-    printf 'LAST_LAUNCH_FILE=%q\n' "${2:-}"
-    printf 'LAST_BASE_ARGS=%q\n' "${3:-}"
-    printf 'LAST_MODE_CHOICE=%q\n' "${4:-}"
-    printf 'LAST_ASK_ARM_SIDE=%q\n' "${5:-0}"
-    printf 'LAST_ASK_LIFT_MODE=%q\n' "${6:-0}"
-    printf 'LAST_CAN_ARG=%q\n' "${7:-}"
-    printf 'LAST_LIFT_MODE_ARG=%q\n' "${8:-}"
-  } > "${f}"
-}
+  local new_desc="${1:-}"
+  local new_launch="${2:-}"
+  local new_base="${3:-}"
+  local new_mode="${4:-}"
+  local new_ask_arm="${5:-0}"
+  local new_ask_lift="${6:-0}"
+  local new_can="${7:-}"
+  local new_lift="${8:-}"
+  local new_fp i j n
+  local d l b m aa al c lm
+  local -a descs launches bases modes ask_arms ask_lifts cans lifts
+  local -a keep_d keep_l keep_b keep_m keep_aa keep_al keep_c keep_lm
 
-_load_launch_last() {
-  LAST_DESC="" LAST_LAUNCH_FILE="" LAST_BASE_ARGS="" LAST_MODE_CHOICE=""
-  LAST_ASK_ARM_SIDE="" LAST_ASK_LIFT_MODE="" LAST_CAN_ARG="" LAST_LIFT_MODE_ARG=""
-  if [ -f "${QS_LAST_LAUNCH_FILE}" ]; then
-    # shellcheck disable=SC1090
-    source "${QS_LAST_LAUNCH_FILE}" 2>/dev/null || true
+  new_fp="$(_launch_fingerprint "${new_launch}" "${new_base}" "${new_mode}" "${new_can}" "${new_lift}")"
+
+  _load_launch_last
+  n="${LAST_COUNT:-0}"
+  for ((i = 0; i < n; i++)); do
+    d="LAST_DESC_${i}"; l="LAST_LAUNCH_FILE_${i}"; b="LAST_BASE_ARGS_${i}"
+    m="LAST_MODE_CHOICE_${i}"; aa="LAST_ASK_ARM_SIDE_${i}"; al="LAST_ASK_LIFT_MODE_${i}"
+    c="LAST_CAN_ARG_${i}"; lm="LAST_LIFT_MODE_ARG_${i}"
+    descs+=("${!d:-}")
+    launches+=("${!l:-}")
+    bases+=("${!b:-}")
+    modes+=("${!m:-}")
+    ask_arms+=("${!aa:-0}")
+    ask_lifts+=("${!al:-0}")
+    cans+=("${!c:-}")
+    lifts+=("${!lm:-}")
+  done
+
+  for ((i = 0; i < n; i++)); do
+    if [ "$(_launch_fingerprint "${launches[$i]}" "${bases[$i]}" "${modes[$i]}" "${cans[$i]}" "${lifts[$i]}")" = "${new_fp}" ]; then
+      continue
+    fi
+    keep_d+=("${descs[$i]}")
+    keep_l+=("${launches[$i]}")
+    keep_b+=("${bases[$i]}")
+    keep_m+=("${modes[$i]}")
+    keep_aa+=("${ask_arms[$i]}")
+    keep_al+=("${ask_lifts[$i]}")
+    keep_c+=("${cans[$i]}")
+    keep_lm+=("${lifts[$i]}")
+  done
+
+  _clear_launch_history_vars
+  LAST_DESC_0="${new_desc}"
+  LAST_LAUNCH_FILE_0="${new_launch}"
+  LAST_BASE_ARGS_0="${new_base}"
+  LAST_MODE_CHOICE_0="${new_mode}"
+  LAST_ASK_ARM_SIDE_0="${new_ask_arm}"
+  LAST_ASK_LIFT_MODE_0="${new_ask_lift}"
+  LAST_CAN_ARG_0="${new_can}"
+  LAST_LIFT_MODE_ARG_0="${new_lift}"
+  LAST_COUNT=1
+
+  n="${#keep_d[@]}"
+  if [ "${n}" -gt $((QS_LAST_LAUNCH_MAX - 1)) ]; then
+    n=$((QS_LAST_LAUNCH_MAX - 1))
   fi
+  for ((j = 0; j < n; j++)); do
+    i=$((j + 1))
+    printf -v "LAST_DESC_${i}" '%s' "${keep_d[$j]}"
+    printf -v "LAST_LAUNCH_FILE_${i}" '%s' "${keep_l[$j]}"
+    printf -v "LAST_BASE_ARGS_${i}" '%s' "${keep_b[$j]}"
+    printf -v "LAST_MODE_CHOICE_${i}" '%s' "${keep_m[$j]}"
+    printf -v "LAST_ASK_ARM_SIDE_${i}" '%s' "${keep_aa[$j]}"
+    printf -v "LAST_ASK_LIFT_MODE_${i}" '%s' "${keep_al[$j]}"
+    printf -v "LAST_CAN_ARG_${i}" '%s' "${keep_c[$j]}"
+    printf -v "LAST_LIFT_MODE_ARG_${i}" '%s' "${keep_lm[$j]}"
+    LAST_COUNT=$((i + 1))
+  done
+  LAST_DESC="${LAST_DESC_0:-}"
+  _write_launch_history
 }
 
 _mode_choice_label() {
@@ -348,17 +496,40 @@ _mode_choice_label() {
   esac
 }
 
-# 使用上次记录完整复现（不再询问侧/升降/运行模式）
+# $1=历史下标（0=最近）；完整复现，不再询问侧/升降/运行模式
 _do_last_launch() {
+  local idx="${1:-0}"
+  local desc launch_file base_args mode_choice ask_arm ask_lift can_arg lift_arg
+  local v_desc v_launch v_base v_mode v_ask_arm v_ask_lift v_can v_lift
   _load_launch_last
-  if [ -z "${LAST_LAUNCH_FILE}" ] || [ -z "${LAST_MODE_CHOICE}" ]; then
-    echo -e "${YELLOW}[WARN] 无有效上次启动记录（${QS_LAST_LAUNCH_FILE}）${NC}"
+  if ! [[ "${idx}" =~ ^[0-9]+$ ]] || [ "${idx}" -ge "${LAST_COUNT:-0}" ]; then
+    echo -e "${YELLOW}[WARN] 无有效启动记录 #$((idx + 1))（${QS_LAST_LAUNCH_FILE}）${NC}"
     return 1
   fi
-  echo -e "${GREEN}使用上次启动：${LAST_DESC}${NC}"
-  do_launch "${LAST_DESC}" "${LAST_LAUNCH_FILE}" "${LAST_BASE_ARGS}" \
-    "${LAST_MODE_CHOICE}" "${LAST_ASK_ARM_SIDE:-0}" "${LAST_ASK_LIFT_MODE:-0}" \
-    "1" "${LAST_CAN_ARG}" "${LAST_LIFT_MODE_ARG}"
+  v_desc="LAST_DESC_${idx}"
+  v_launch="LAST_LAUNCH_FILE_${idx}"
+  v_base="LAST_BASE_ARGS_${idx}"
+  v_mode="LAST_MODE_CHOICE_${idx}"
+  v_ask_arm="LAST_ASK_ARM_SIDE_${idx}"
+  v_ask_lift="LAST_ASK_LIFT_MODE_${idx}"
+  v_can="LAST_CAN_ARG_${idx}"
+  v_lift="LAST_LIFT_MODE_ARG_${idx}"
+  desc="${!v_desc:-}"
+  launch_file="${!v_launch:-}"
+  base_args="${!v_base:-}"
+  mode_choice="${!v_mode:-}"
+  ask_arm="${!v_ask_arm:-0}"
+  ask_lift="${!v_ask_lift:-0}"
+  can_arg="${!v_can:-}"
+  lift_arg="${!v_lift:-}"
+  if [ -z "${launch_file}" ] || [ -z "${mode_choice}" ]; then
+    echo -e "${YELLOW}[WARN] 启动记录 #$((idx + 1)) 不完整（${QS_LAST_LAUNCH_FILE}）${NC}"
+    return 1
+  fi
+  echo -e "${GREEN}使用最近启动 #$((idx + 1))：${desc}${NC}"
+  do_launch "${desc}" "${launch_file}" "${base_args}" \
+    "${mode_choice}" "${ask_arm}" "${ask_lift}" \
+    "1" "${can_arg}" "${lift_arg}"
 }
 
 # ==================== 手柄遥操作 ====================
@@ -637,11 +808,12 @@ build_menu() {
       echo -e "  ${BLUE}  arms-standard：真机须额外编译 arx_ros2_control（源码 HI）${NC}" >&2
     fi
   fi
-  echo "  1) 编译仿真所需包 (Simulation)" >&2
-  echo "  2) 编译真机所需包 (Real — arx_ros2_control + 描述)" >&2
+  echo "  1) 编译 Lift2S 真机 (arx_ros2_control + acone/lift2s)" >&2
+  echo "  2) 编译 Lift2S 仿真 (acone/lift2s)" >&2
+  echo "  3) 编译所有仿真 (x5/r5/acone/lift/lift2s/x7s)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-2]: " choice
+  read -r -p "请输入选项 [0-3]: " choice
   echo "${choice}"
 }
 
@@ -668,54 +840,115 @@ run_colcon_packages_up_to() {
 }
 
 launch_menu() {
-  local last_desc="${1:-}"
   local base=1 max_opt
+  local i n="${LAST_COUNT:-0}" desc v_desc
 
   echo "" >&2
   echo "请选择启动项:" >&2
-  if [ -n "${last_desc}" ]; then
-    echo "  1) 使用上次 — ${last_desc}" >&2
-    base=2
+  if [ "${n}" -gt 0 ]; then
+    for ((i = 0; i < n; i++)); do
+      v_desc="LAST_DESC_${i}"
+      desc="${!v_desc:-}"
+      echo "  $((i + 1))) 使用最近 — ${desc}" >&2
+    done
+    base=$((n + 1))
+    echo "" >&2
+    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━ 机型选项 ━━━━━━━━━━━━━━━━${NC}" >&2
+    echo "" >&2
   fi
   echo "  ${base}) 单臂 X5 (arx5)" >&2
-  echo "  $((base + 1))) 双臂 ACone (arx_acone)" >&2
-  echo "  $((base + 2))) Lift2S 分体控制 (split_body)" >&2
-  echo "  $((base + 3))) Lift2S 全身控制 (full_body)" >&2
+  echo "  $((base + 1))) 单臂 R5 (arx5 type:=r5)" >&2
+  echo "  $((base + 2))) 双臂 ACone (arx_acone)" >&2
+  echo "  $((base + 3))) Lift (arx_lift)" >&2
+  echo "  $((base + 4))) Lift2S (arx_lift2s)" >&2
+  echo "  $((base + 5))) X7S (arx_x7s)" >&2
   echo "" >&2
   echo -e "  ${BLUE}━━━━━━━━━━━━━━━━ 辅助功能 ━━━━━━━━━━━━━━━━${NC}" >&2
   echo "" >&2
-  echo "  $((base + 4))) 手柄遥操作 (Joystick Teleop)" >&2
+  echo "  $((base + 6))) 手柄遥操作 (Joystick Teleop)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  max_opt=$((base + 4))
+  max_opt=$((base + 6))
   read -r -p "请输入选项 [0-${max_opt}]: " choice
   echo "${choice}"
 }
 
-# 解析 launch_menu → last | single | dual | split | full | joystick | back | invalid
+# 解析 launch_menu → last:N | x5 | r5 | acone | lift | lift2s | x7s | joystick | back | invalid
 _resolve_launch_menu_choice() {
   local choice="$1"
-  local offset=0
-  [ -n "${LAST_DESC}" ] && offset=1
+  local n="${LAST_COUNT:-0}"
+  local offset="${n}"
 
   if [ "${choice}" = "0" ]; then
     echo "back"
     return 0
   fi
-  if [ "${offset}" -eq 1 ] && [ "${choice}" = "1" ]; then
-    echo "last"
+  if ! [[ "${choice}" =~ ^[0-9]+$ ]]; then
+    echo "invalid"
+    return 0
+  fi
+  if [ "${n}" -gt 0 ] && [ "${choice}" -ge 1 ] && [ "${choice}" -le "${n}" ]; then
+    echo "last:$((choice - 1))"
     return 0
   fi
 
   local idx=$((choice - offset))
   case "${idx}" in
-    1) echo "single" ;;
-    2) echo "dual" ;;
-    3) echo "split" ;;
-    4) echo "full" ;;
-    5) echo "joystick" ;;
+    1) echo "x5" ;;
+    2) echo "r5" ;;
+    3) echo "acone" ;;
+    4) echo "lift" ;;
+    5) echo "lift2s" ;;
+    6) echo "x7s" ;;
+    7) echo "joystick" ;;
     *) echo "invalid" ;;
   esac
+}
+
+# 分体 / 全身（lift / lift2s / x7s）
+body_control_mode_menu() {
+  local robot_label="${1:-}"
+  echo "" >&2
+  if [ -n "${robot_label}" ]; then
+    echo "请选择 ${robot_label} 控制方式:" >&2
+  else
+    echo "请选择控制方式:" >&2
+  fi
+  echo "  1) 分体控制 (Split Body)" >&2
+  echo "  2) 全身控制 (Full Body)" >&2
+  echo "  0) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [0-2]: " choice
+  echo "${choice}"
+}
+
+# $1=机型短名(Lift|Lift2S|X7S) $2=base_args
+# 询问分体/全身后 do_launch；返回时不启动
+do_launch_with_body_mode() {
+  local robot_label="$1"
+  local base_args="$2"
+  local body_choice launch_file mode_label
+
+  body_choice="$(body_control_mode_menu "${robot_label}")"
+  case "${body_choice}" in
+    1)
+      launch_file="ocs2_arm_controller split_body.launch.py"
+      mode_label="分体控制"
+      ;;
+    2)
+      launch_file="ocs2_arm_controller full_body.launch.py"
+      mode_label="全身控制"
+      ;;
+    0)
+      echo "返回"
+      return 0
+      ;;
+    *)
+      echo -e "${YELLOW}无效选项${NC}"
+      exit 1
+      ;;
+  esac
+  do_launch "${robot_label} ${mode_label}" "${launch_file}" "${base_args}" "" "0" "1"
 }
 
 launch_mode_menu() {
@@ -744,36 +977,19 @@ case "${top_choice}" in
     build_choice="$(build_menu)"
     case "${build_choice}" in
       1)
-        echo -e "${GREEN}开始编译仿真所需包...${NC}"
-        if core_deb_mode; then
-          warn_hi_overlay_conflict
-          echo -e "${BLUE}  模式: 核心包 deb + 仅编译 ARX 描述包${NC}"
-          if ! run_colcon_packages_up_to "${BUILD_DEB_PACKAGES[@]}"; then
-            echo -e "${YELLOW}编译过程中出现错误${NC}"
-            exit 1
-          fi
-        else
-          if ! run_colcon_packages_up_to "${BUILD_SIM_PACKAGES[@]}"; then
-            echo -e "${YELLOW}编译过程中出现错误${NC}"
-            exit 1
-          fi
-        fi
-        echo -e "${GREEN}编译完成！${NC}"
-        ;;
-      2)
-        echo -e "${GREEN}开始编译真机所需包...${NC}"
+        echo -e "${GREEN}开始编译 Lift2S 真机所需包...${NC}"
         if core_deb_mode; then
           warn_hi_overlay_conflict
           if arx_from_deb; then
-            echo -e "${BLUE}  模式: 核心包 deb(arms-full 含 arx_ros2_control) + 仅编译 ARX 描述包${NC}"
-            if ! run_colcon_packages_up_to "${BUILD_DEB_REAL_PACKAGES[@]}"; then
+            echo -e "${BLUE}  模式: 核心包 deb(arms-full 含 arx_ros2_control) + 仅编译 Lift2S 描述包${NC}"
+            if ! run_colcon_packages_up_to "${BUILD_DEB_LIFT2S_PACKAGES[@]}"; then
               echo -e "${YELLOW}编译过程中出现错误${NC}"
               exit 1
             fi
           else
-            echo -e "${BLUE}  模式: 核心包 deb(standard) + 编译描述与 arx_ros2_control（源码 HI）${NC}"
+            echo -e "${BLUE}  模式: 核心包 deb(standard) + 编译 Lift2S 描述与 arx_ros2_control（源码 HI）${NC}"
             ensure_arx_hi_external || exit 1
-            local -a real_pkgs=("${BUILD_DEB_REAL_PACKAGES[@]}" arx_ros2_control)
+            local -a real_pkgs=("${BUILD_DEB_LIFT2S_PACKAGES[@]}" arx_ros2_control)
             if ! run_colcon_packages_up_to "${real_pkgs[@]}"; then
               echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
               exit 1
@@ -781,7 +997,7 @@ case "${top_choice}" in
           fi
         else
           ensure_arx_hi_external || exit 1
-          if ! run_colcon_packages_up_to "${BUILD_REAL_PACKAGES[@]}"; then
+          if ! run_colcon_packages_up_to "${BUILD_LIFT2S_REAL_PACKAGES[@]}"; then
             echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
             exit 1
           fi
@@ -789,6 +1005,40 @@ case "${top_choice}" in
         echo -e "${GREEN}编译完成！${NC}"
         echo -e "${BLUE}启动：单臂可选左/右 CAN；臂仅 full_control；升降可选 hybrid/soft_p${NC}"
         print_can_hint
+        ;;
+      2)
+        echo -e "${GREEN}开始编译 Lift2S 仿真所需包...${NC}"
+        if core_deb_mode; then
+          warn_hi_overlay_conflict
+          echo -e "${BLUE}  模式: 核心包 deb + 仅编译 Lift2S 描述包${NC}"
+          if ! run_colcon_packages_up_to "${BUILD_DEB_LIFT2S_PACKAGES[@]}"; then
+            echo -e "${YELLOW}编译过程中出现错误${NC}"
+            exit 1
+          fi
+        else
+          if ! run_colcon_packages_up_to "${BUILD_LIFT2S_SIM_PACKAGES[@]}"; then
+            echo -e "${YELLOW}编译过程中出现错误${NC}"
+            exit 1
+          fi
+        fi
+        echo -e "${GREEN}编译完成！${NC}"
+        ;;
+      3)
+        echo -e "${GREEN}开始编译所有仿真所需包...${NC}"
+        if core_deb_mode; then
+          warn_hi_overlay_conflict
+          echo -e "${BLUE}  模式: 核心包 deb + 仅编译全部 ARX 描述包${NC}"
+          if ! run_colcon_packages_up_to "${BUILD_DEB_ALL_PACKAGES[@]}"; then
+            echo -e "${YELLOW}编译过程中出现错误${NC}"
+            exit 1
+          fi
+        else
+          if ! run_colcon_packages_up_to "${BUILD_ALL_SIM_PACKAGES[@]}"; then
+            echo -e "${YELLOW}编译过程中出现错误${NC}"
+            exit 1
+          fi
+        fi
+        echo -e "${GREEN}编译完成！${NC}"
         ;;
       0)
         echo "返回"
@@ -802,26 +1052,32 @@ case "${top_choice}" in
 
   2)
     _load_launch_last
-    if [ -n "${LAST_DESC}" ]; then
-      echo -e "${BLUE}[INFO] 上次启动记录: config/launch_last.conf${NC}"
+    if [ "${LAST_COUNT:-0}" -gt 0 ]; then
+      echo -e "${BLUE}[INFO] 最近启动记录（最多 ${QS_LAST_LAUNCH_MAX} 条）: config/launch_last.conf${NC}"
     fi
-    launch_choice="$(launch_menu "${LAST_DESC}")"
+    launch_choice="$(launch_menu)"
     launch_action="$(_resolve_launch_menu_choice "${launch_choice}")"
     case "${launch_action}" in
-      last)
-        _do_last_launch
+      last:*)
+        _do_last_launch "${launch_action#last:}"
         ;;
-      single)
+      x5)
         do_launch "单臂 X5" "ocs2_arm_controller demo.launch.py" "robot:=arx5" "" "1" "0"
         ;;
-      dual)
+      r5)
+        do_launch "单臂 R5" "ocs2_arm_controller demo.launch.py" "robot:=arx5 type:=r5" "" "1" "0"
+        ;;
+      acone)
         do_launch "双臂 ACone" "ocs2_arm_controller demo.launch.py" "robot:=arx_acone" "" "0" "0"
         ;;
-      split)
-        do_launch "Lift2S 分体控制" "ocs2_arm_controller split_body.launch.py" "robot:=arx_lift2s" "" "0" "1"
+      lift)
+        do_launch_with_body_mode "Lift" "robot:=arx_lift"
         ;;
-      full)
-        do_launch "Lift2S 全身控制" "ocs2_arm_controller full_body.launch.py" "robot:=arx_lift2s" "" "0" "1"
+      lift2s)
+        do_launch_with_body_mode "Lift2S" "robot:=arx_lift2s"
+        ;;
+      x7s)
+        do_launch_with_body_mode "X7S" "robot:=arx_x7s"
         ;;
       joystick)
         do_launch_joystick_teleop

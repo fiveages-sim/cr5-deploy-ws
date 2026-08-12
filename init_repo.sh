@@ -236,9 +236,10 @@ prompt_deb_channel() {
   echo "  3) pre-release  — 滚动 pre-release"
   read -rp "请输入 [1/2/3]: " choice
   case "$choice" in
-    2) DEB_CHANNEL="conf" ;;
+    1) DEB_CHANNEL="conf" ;;
+    2) DEB_CHANNEL="latest" ;;
     3) DEB_CHANNEL="pre-release" ;;
-    1|"") DEB_CHANNEL="${DEB_CHANNEL:-conf}" ;;
+    "") DEB_CHANNEL="${DEB_CHANNEL:-conf}" ;;
     *) print_warn "无效选项，保持 ${DEB_CHANNEL}" ;;
   esac
 }

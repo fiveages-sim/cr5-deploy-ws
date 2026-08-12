@@ -134,7 +134,7 @@ Artifact: `dist/lift2s-ws_<YYYYMMDD_HHMMSS>_<arch>[_nogit].zip`.
 
 ```bash
 cd ~
-git clone git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws
+git clone git@github.com:fiveages-sim/open-deploy-ws.git arx-ws
 cd ~/lift2s-ws
 ```
 
@@ -311,7 +311,7 @@ Joystick teleop runs in a **separate process** from the robot control stack (sam
 
 **Dependencies**
 
-- Control stack built (`arms_teleop` is in `BUILD_SIM_PACKAGES` / `BUILD_REAL_PACKAGES`; in release deployments it comes from **arms-full deb**)
+- Control stack built (`arms_teleop` is in `BUILD_LIFT2S_*` / `BUILD_ALL_SIM_PACKAGES`; in release deployments it comes from **arms-full deb**)
 - If the joy package is missing:
 
 ```bash

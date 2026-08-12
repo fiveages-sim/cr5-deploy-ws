@@ -134,7 +134,7 @@ cd ~/lift2s-ws
 
 ```bash
 cd ~
-git clone git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws
+git clone git@github.com:fiveages-sim/open-deploy-ws.git arx-ws
 cd ~/lift2s-ws
 ```
 
@@ -311,7 +311,7 @@ ros2 launch ocs2_arm_controller full_body.launch.py robot:=arx_lift2s hardware:=
 
 **依赖**
 
-- 控制栈已编译（`arms_teleop` 在 `BUILD_SIM_PACKAGES` / `BUILD_REAL_PACKAGES` 中；发布包由 **arms-full deb** 提供）
+- 控制栈已编译（`arms_teleop` 在 `BUILD_LIFT2S_*` / `BUILD_ALL_SIM_PACKAGES` 中；发布包由 **arms-full deb** 提供）
 - 若未安装 joy 包：
 
 ```bash
