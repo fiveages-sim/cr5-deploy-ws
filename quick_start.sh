@@ -2,16 +2,15 @@
 
 # 快速启动脚本（Panthera HT Deploy Workspace）
 # - 自动识别当前 workspace 路径（脚本所在目录）
+# - 拖动模式仅真机可用；仿真启动时不提供拖动模式
 # - 启动选项参考：README.md
 
-# 颜色定义
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+set -u
 
-WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WS_DIR="${SCRIPT_DIR}"
+
+. "${SCRIPT_DIR}/scripts/lib_common.sh"
 
 # 核心包由 deb 提供时，src 下无 arms_ros2_control / ocs2_ros2 等
 # HT 工作空间默认 arms-full（含 ht_ros2_control）
@@ -142,12 +141,10 @@ with open(path, "w", encoding="utf-8") as f:
 PYEOF
 }
 
-
 # 主菜单: $1 = 历史条数 (0/1/2); 有历史时选项 1..N 为历史启动, 回车默认选 1
 menu() {
   local n="${1:-0}"
-  local last
-  local d
+  local last d
   echo -e "${BLUE}========================================${NC}" >&2
   echo -e "${BLUE}  快速启动（Panthera HT Deploy Workspace）${NC}" >&2
   echo -e "${BLUE}  Workspace: ${WS_DIR}${NC}" >&2
@@ -156,18 +153,18 @@ menu() {
   echo "请选择操作:" >&2
   if [ "${n}" -ge 1 ]; then
     d="$(hist_desc_at 0)"
-    echo "  1) 上次启动: ${d} (默认)" >&2
+    echo " *1) 上次启动: ${d}" >&2
   fi
   if [ "${n}" -ge 2 ]; then
     d="$(hist_desc_at 1)"
-    echo "  2) 另一次启动: ${d}" >&2
+    echo "  $((n + 0))) 另一次启动: ${d}" >&2
   fi
   echo "  $((n + 1))) 编译 (Build)" >&2
   echo "  $((n + 2))) 启动 (Launch)" >&2
   echo "  0) 退出 (Exit)" >&2
   echo "" >&2
   last=$((n + 2))
-  read -r -p "请输入选项 [0-${last}] (默认 1): " choice
+  read -r -p "请输入选项 [0-${last}]（回车=默认 1）: " choice
   if [ -z "${choice}" ]; then
     choice="1"
   fi
@@ -177,8 +174,8 @@ menu() {
 build_menu() {
   echo "" >&2
   echo "请选择编译目标:" >&2
-  echo "  1) 编译仿真所需包 (Build Simulation Packages)" >&2
-  echo "  2) 编译真机所需包 (Build Real Hardware Packages)" >&2
+  echo "  1) 编译仿真所需包" >&2
+  echo "  2) 编译真机所需包" >&2
   echo "  0) 返回" >&2
   echo "" >&2
   read -r -p "请输入选项 [0-2]: " choice
@@ -188,9 +185,9 @@ build_menu() {
 launch_menu() {
   echo "" >&2
   echo "请选择启动项:" >&2
-  echo "  1) 单臂 (Single)" >&2
-  echo "  2) 双臂 (Dual)" >&2
-  echo "  3) 手柄遥操作 (Joystick Teleop)" >&2
+  echo "  1) 单臂" >&2
+  echo "  2) 双臂" >&2
+  echo "  3) 手柄遥操作" >&2
   echo "  0) 返回" >&2
   echo "" >&2
   read -r -p "请输入选项 [0-3]: " choice
@@ -200,8 +197,8 @@ launch_menu() {
 launch_mode_menu() {
   echo "" >&2
   echo "请选择运行模式:" >&2
-  echo "  1) 仿真 (Simulation / mock_components)" >&2
-  echo "  2) 真机 (Real Hardware)" >&2
+  echo "  1) 仿真" >&2
+  echo "  2) 真机" >&2
   echo "  0) 返回" >&2
   echo "" >&2
   read -r -p "请输入选项 [0-2]: " choice
@@ -212,12 +209,12 @@ launch_mode_menu() {
 control_mode_menu() {
   echo "" >&2
   echo "请选择真机控制模式:" >&2
-  echo "  1) full_control   — OCS2 MIX（位置+速度+力矩+kp/kd）" >&2
+  echo " *1) full_control   — OCS2 MIX（位置+速度+力矩+kp/kd）" >&2
   echo "  2) pd_control     — 位置+力矩，kp/kd" >&2
   echo "  3) position_velocity — 位置+速度+最大力矩" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-3] (默认 1): " choice
+  read -r -p "请输入选项 [0-3]（回车=默认 1）: " choice
   if [ -z "${choice}" ]; then
     choice="1"
   fi
@@ -276,7 +273,7 @@ ensure_ttyacm_access() {
   return 0
 }
 
-# 询问是否启用拖动模式（低刚度）; echo "true"/"false"
+# 询问是否启用拖动模式（低刚度，仅真机）；echo "true"/"false"
 ask_drag_mode() {
   local yn
   read -r -p "启用拖动模式(低刚度, 夹爪可掰动)? [y/N]: " yn
@@ -311,8 +308,8 @@ apply_drag_mode() {
   done
   ros2 param set /panthera_ht_system joint_kp "${kp_list}" >/dev/null
   ros2 param set /panthera_ht_system joint_kd "${kd_list}" >/dev/null
-  ros2 param set /panthera_ht_system gripper_kp 0.01 >/dev/null
-  ros2 param set /panthera_ht_system gripper_kd 0.1 >/dev/null
+  ros2 param set /panthera_ht_system gripper_kp 0.001 >/dev/null
+  ros2 param set /panthera_ht_system gripper_kd 0.01 >/dev/null
   echo -e "${BLUE}[INFO] 拖动模式已启用：joint_kp=${kp_list} joint_kd=${kd_list}${NC}"
 }
 
@@ -439,11 +436,11 @@ joystick_device_menu() {
   if [ -n "${menu_lines}" ]; then
     echo "${menu_lines}" >&2
   else
-    echo "  0) Joy ID 0 (未枚举到手柄，使用默认 ID)" >&2
+    echo " *0) Joy ID 0（未枚举到手柄，使用默认 ID）" >&2
   fi
   echo "  q) 返回" >&2
   echo "" >&2
-  read -r -p "请输入 Joy ID (默认: 0，输入 q 返回): " choice
+  read -r -p "请输入 Joy ID（默认: 0，输入 q 返回）: " choice
   if [ -z "${choice}" ]; then
     choice="0"
   fi
@@ -489,20 +486,12 @@ do_launch_joystick_teleop() {
   esac
 }
 
-need_cmd() {
-  local cmd="$1"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo -e "${RED}[ERROR] 缺少命令：$cmd${NC}"
-    return 1
-  fi
-  return 0
-}
-
 run_colcon_build() {
   cd "${WS_DIR}" || exit 1
   source_ros_underlay
   colcon build "$@"
 }
+
 need_cmd colcon || echo -e "${YELLOW}[WARN] 未找到 colcon，编译选项会失败（通常需要安装 ROS 发行版环境）。${NC}"
 
 HIST_COUNT="$(history_count)"
@@ -606,18 +595,18 @@ if [ "${top_choice}" = "$((HIST_COUNT + 2))" ]; then
 
         mode_choice="$(launch_mode_menu)"
 
-        # 拖动模式: 低刚度（启动后调低硬件 kp/kd，ROS 参数即时生效）
-        drag_flag="false"
-        if [ "$(ask_drag_mode)" = "true" ]; then
-          drag_flag="true"
-          echo -e "${BLUE}[INFO] 拖动模式已启用（低刚度）${NC}"
-        fi
-
         case "${mode_choice}" in
           1)
-            _run_ocs2_demo "${arm_label}仿真（Panthera HT）" "${drag_flag}" "${type_arg}"
+            # 仿真：无拖动模式
+            _run_ocs2_demo "${arm_label}仿真" "false" "${type_arg}"
             ;;
           2)
+            # 真机：可启用拖动模式（低刚度，启动后调低硬件 kp/kd）
+            drag_flag="false"
+            if [ "$(ask_drag_mode)" = "true" ]; then
+              drag_flag="true"
+              echo -e "${BLUE}[INFO] 拖动模式已启用（低刚度）${NC}"
+            fi
             cm_choice="$(control_mode_menu)"
             CONTROL_MODE="$(resolve_control_mode "${cm_choice}")"
             if [ "${CONTROL_MODE}" = "INVALID" ]; then
@@ -627,7 +616,7 @@ if [ "${top_choice}" = "$((HIST_COUNT + 2))" ]; then
             if [ -z "${CONTROL_MODE}" ]; then
               echo "返回"
             else
-              _run_ocs2_demo "${arm_label}真机（Panthera HT）" "${drag_flag}" "${type_arg}" "hardware:=real"
+              _run_ocs2_demo "${arm_label}真机" "${drag_flag}" "${type_arg}" "hardware:=real"
             fi
             ;;
           0)
