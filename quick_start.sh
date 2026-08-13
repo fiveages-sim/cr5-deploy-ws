@@ -576,7 +576,7 @@ joystick_device_menu() {
 
 _run_joystick_teleop_launch() {
   local joy_dev="${1:-}"
-  ensure_ros_env || exit 1
+  ensure_ros_env || return 1
   echo -e "${BLUE}[INFO] 手柄遥操需机器人 stack 已在运行（另开终端启动真机/仿真）${NC}"
   if [ -z "${joy_dev}" ]; then
     echo -e "${GREEN}启动手柄遥操作...${NC}"
@@ -585,12 +585,13 @@ _run_joystick_teleop_launch() {
     echo -e "${GREEN}启动手柄遥操作（${joy_dev}）...${NC}"
     ros2 launch arms_teleop joystick_teleop.launch.py "joy_dev:=${joy_dev}"
   fi
+  return $?
 }
 
 do_launch_joystick_teleop() {
   local device_choice device_count device_id
 
-  ensure_ros_env || exit 1
+  ensure_ros_env || return 1
   device_count="$(_joystick_count)"
 
   if [ "${device_count}" -eq 1 ]; then
@@ -600,30 +601,32 @@ do_launch_joystick_teleop() {
     else
       _run_joystick_teleop_launch "/dev/input/js${device_id}"
     fi
-    return
+    return $?
   fi
 
   if [ "${device_count}" -eq 0 ]; then
     echo -e "${YELLOW}[WARN] 未枚举到手柄，使用默认 /dev/input/js0${NC}"
     _run_joystick_teleop_launch ""
-    return
+    return $?
   fi
 
   device_choice="$(joystick_device_menu)"
   case "${device_choice}" in
     back)
       echo "返回"
-      return
+      return 2
       ;;
     0)
       _run_joystick_teleop_launch ""
+      return $?
       ;;
     *)
       if ! [[ "${device_choice}" =~ ^[0-9]+$ ]]; then
         echo -e "${YELLOW}无效 Joy ID: ${device_choice}${NC}"
-        exit 1
+        return 1
       fi
       _run_joystick_teleop_launch "/dev/input/js${device_choice}"
+      return $?
       ;;
   esac
 }
@@ -634,79 +637,125 @@ do_launch_joystick_teleop() {
 # $6=1 时：真机询问升降 lift_motor_mode
 # $7=1 时：复现模式，跳过侧/升降询问，使用 $8/$9
 # $8=preset can_arg  $9=preset lift_motor_mode_arg
+# $10=1 时运行模式菜单含真机（仅 X5 / ACone-X5 / Lift2S）
+# 返回码：0=完成/启动结束；2=用户选 0 返回上一级；1=无效/失败
 do_launch() {
   local description="$1"
   local launch_file="$2"
   local base_args="$3"
-  local mode_choice="${4:-}"
+  local preset_mode="${4:-}"
   local ask_arm_side="${5:-0}"
   local ask_lift_mode="${6:-0}"
   local replay="${7:-0}"
   local can_arg="${8:-}"
   local lift_motor_mode_arg="${9:-}"
+  local allow_real="${10:-1}"
+  local mode_choice=""
   local mode_label=""
   local save_desc=""
+  local side_choice can_if lm_choice lift_motor_mode
 
-  if [ -z "${mode_choice}" ]; then
-    mode_choice="$(launch_mode_menu)"
-  fi
+  while true; do
+    mode_choice="${preset_mode}"
+    mode_label=""
+    if [ -z "${mode_choice}" ]; then
+      mode_choice="$(launch_mode_menu "${allow_real}")"
+    fi
 
-  # 真机 / 真机 headless
-  if { [ "${mode_choice}" = "1" ] || [ "${mode_choice}" = "2" ]; }; then
-    if [ "${replay}" = "1" ]; then
-      if [ -n "${can_arg}" ]; then
-        if [[ "${can_arg}" == *can1* ]]; then
-          mode_label="，左臂 can1"
-        elif [[ "${can_arg}" == *can3* ]]; then
-          mode_label="，右臂 can3"
+    case "${mode_choice}" in
+      0)
+        echo "返回"
+        return 2
+        ;;
+      1|2)
+        if [ "${allow_real}" != "1" ] && [ "${replay}" != "1" ]; then
+          echo -e "${YELLOW}该机型不支持真机启动${NC}"
+          if [ -n "${preset_mode}" ]; then
+            return 1
+          fi
+          continue
         fi
-      fi
-      mode_label="${mode_label}，臂=full_control"
-      if [ -n "${lift_motor_mode_arg}" ]; then
-        mode_label="${mode_label}，升降=${lift_motor_mode_arg#xacro_lift_motor_mode:=}"
-      fi
-    else
-      can_arg=""
-      lift_motor_mode_arg=""
-      if [ "${ask_arm_side}" = "1" ]; then
-        local side_choice can_if
-        side_choice="$(arm_side_menu)"
-        can_if="$(resolve_arm_can "${side_choice}")"
-        if [ "${can_if}" = "INVALID" ]; then
-          echo -e "${YELLOW}无效选项${NC}"
-          exit 1
+        ;;
+      [3-7]) ;;
+      *)
+        echo -e "${YELLOW}无效选项${NC}"
+        if [ -n "${preset_mode}" ]; then
+          return 1
         fi
-        if [ -z "${can_if}" ]; then
-          echo "返回"
-          return 0
-        fi
-        can_arg="xacro_can_interface:=${can_if}"
-        if [ "${can_if}" = "can1" ]; then
-          mode_label="，左臂 can1"
-        else
-          mode_label="，右臂 can3"
-        fi
-      fi
+        continue
+        ;;
+    esac
 
-      mode_label="${mode_label}，臂=full_control"
+    # 真机 / 真机 headless
+    if { [ "${mode_choice}" = "1" ] || [ "${mode_choice}" = "2" ]; }; then
+      if [ "${replay}" = "1" ]; then
+        if [ -n "${can_arg}" ]; then
+          if [[ "${can_arg}" == *can1* ]]; then
+            mode_label="，左臂 can1"
+          elif [[ "${can_arg}" == *can3* ]]; then
+            mode_label="，右臂 can3"
+          fi
+        fi
+        mode_label="${mode_label}，臂=full_control"
+        if [ -n "${lift_motor_mode_arg}" ]; then
+          mode_label="${mode_label}，升降=${lift_motor_mode_arg#xacro_lift_motor_mode:=}"
+        fi
+      else
+        can_arg=""
+        lift_motor_mode_arg=""
+        if [ "${ask_arm_side}" = "1" ]; then
+          side_choice="$(arm_side_menu)"
+          can_if="$(resolve_arm_can "${side_choice}")"
+          if [ "${can_if}" = "INVALID" ]; then
+            echo -e "${YELLOW}无效选项${NC}"
+            if [ -n "${preset_mode}" ]; then
+              return 1
+            fi
+            continue
+          fi
+          if [ -z "${can_if}" ]; then
+            echo "返回"
+            # 交互选模式时回到运行模式菜单；预选模式则交给上一级
+            if [ -z "${preset_mode}" ]; then
+              continue
+            fi
+            return 2
+          fi
+          can_arg="xacro_can_interface:=${can_if}"
+          if [ "${can_if}" = "can1" ]; then
+            mode_label="，左臂 can1"
+          else
+            mode_label="，右臂 can3"
+          fi
+        fi
 
-      if [ "${ask_lift_mode}" = "1" ]; then
-        local lm_choice lift_motor_mode
-        lm_choice="$(lift_motor_mode_menu)"
-        lift_motor_mode="$(resolve_lift_motor_mode "${lm_choice}")"
-        if [ "${lift_motor_mode}" = "INVALID" ]; then
-          echo -e "${YELLOW}无效选项${NC}"
-          exit 1
+        mode_label="${mode_label}，臂=full_control"
+
+        if [ "${ask_lift_mode}" = "1" ]; then
+          lm_choice="$(lift_motor_mode_menu)"
+          lift_motor_mode="$(resolve_lift_motor_mode "${lm_choice}")"
+          if [ "${lift_motor_mode}" = "INVALID" ]; then
+            echo -e "${YELLOW}无效选项${NC}"
+            if [ -n "${preset_mode}" ]; then
+              return 1
+            fi
+            continue
+          fi
+          if [ -z "${lift_motor_mode}" ]; then
+            echo "返回"
+            if [ -z "${preset_mode}" ]; then
+              continue
+            fi
+            return 2
+          fi
+          lift_motor_mode_arg="xacro_lift_motor_mode:=${lift_motor_mode}"
+          mode_label="${mode_label}，升降=${lift_motor_mode}"
         fi
-        if [ -z "${lift_motor_mode}" ]; then
-          echo "返回"
-          return 0
-        fi
-        lift_motor_mode_arg="xacro_lift_motor_mode:=${lift_motor_mode}"
-        mode_label="${mode_label}，升降=${lift_motor_mode}"
       fi
     fi
-  fi
+
+    break
+  done
 
   case "${mode_choice}" in
     [1-7])
@@ -723,63 +772,64 @@ do_launch() {
   case "${mode_choice}" in
     1)
       echo -e "${GREEN}启动${description}（真机${mode_label}）...${NC}"
-      ensure_ros_env || exit 1
-      ensure_zenoh_router || exit 1
+      ensure_ros_env || return 1
+      ensure_zenoh_router || return 1
       print_can_hint
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=real ${can_arg} ${lift_motor_mode_arg}
+      return $?
       ;;
     2)
       echo -e "${GREEN}启动${description}（真机 headless${mode_label}）...${NC}"
-      ensure_ros_env || exit 1
-      ensure_zenoh_router || exit 1
+      ensure_ros_env || return 1
+      ensure_zenoh_router || return 1
       print_can_hint
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=real launch_mode:=control_only ${can_arg} ${lift_motor_mode_arg}
+      return $?
       ;;
     3)
       echo -e "${GREEN}启动${description}（仿真）...${NC}"
-      ensure_ros_env || exit 1
-      ensure_zenoh_router || exit 1
+      ensure_ros_env || return 1
+      ensure_zenoh_router || return 1
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=mock_components
+      return $?
       ;;
     4)
       echo -e "${GREEN}启动${description}（仿真 headless）...${NC}"
-      ensure_ros_env || exit 1
-      ensure_zenoh_router || exit 1
+      ensure_ros_env || return 1
+      ensure_zenoh_router || return 1
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=mock_components launch_mode:=control_only
+      return $?
       ;;
     5)
       echo -e "${GREEN}启动${description}（Isaac）...${NC}"
-      ensure_ros_env || exit 1
-      ensure_zenoh_router || exit 1
+      ensure_ros_env || return 1
+      ensure_zenoh_router || return 1
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=isaac
+      return $?
       ;;
     6)
       echo -e "${GREEN}启动${description}（Isaac headless）...${NC}"
-      ensure_ros_env || exit 1
-      ensure_zenoh_router || exit 1
+      ensure_ros_env || return 1
+      ensure_zenoh_router || return 1
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} hardware:=isaac launch_mode:=control_only
+      return $?
       ;;
     7)
       echo -e "${GREEN}启动${description}（仅可视化）...${NC}"
-      ensure_ros_env || exit 1
-      ensure_zenoh_router || exit 1
+      ensure_ros_env || return 1
+      ensure_zenoh_router || return 1
       # shellcheck disable=SC2086
       ros2 launch ${launch_file} ${base_args} launch_mode:=rviz_only
-      ;;
-    0)
-      echo "返回"
-      ;;
-    *)
-      echo -e "${YELLOW}无效选项${NC}"
-      exit 1
+      return $?
       ;;
   esac
+  return 0
 }
 
 menu() {
@@ -856,24 +906,21 @@ launch_menu() {
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━ 机型选项 ━━━━━━━━━━━━━━━━${NC}" >&2
     echo "" >&2
   fi
-  echo "  ${base}) 单臂 X5 (arx5)" >&2
-  echo "  $((base + 1))) 单臂 R5 (arx5 type:=r5)" >&2
-  echo "  $((base + 2))) 双臂 ACone (arx_acone)" >&2
-  echo "  $((base + 3))) Lift (arx_lift)" >&2
-  echo "  $((base + 4))) Lift2S (arx_lift2s)" >&2
-  echo "  $((base + 5))) X7S (arx_x7s)" >&2
+  echo "  ${base}) 单臂 (X5 / R5)" >&2
+  echo "  $((base + 1))) 双臂 (ACone)" >&2
+  echo "  $((base + 2))) 整机 (Lift / Lift2S / X7S)" >&2
   echo "" >&2
   echo -e "  ${BLUE}━━━━━━━━━━━━━━━━ 辅助功能 ━━━━━━━━━━━━━━━━${NC}" >&2
   echo "" >&2
-  echo "  $((base + 6))) 手柄遥操作 (Joystick Teleop)" >&2
+  echo "  $((base + 3))) 手柄遥操作 (Joystick Teleop)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  max_opt=$((base + 6))
+  max_opt=$((base + 3))
   read -r -p "请输入选项 [0-${max_opt}]: " choice
   echo "${choice}"
 }
 
-# 解析 launch_menu → last:N | x5 | r5 | acone | lift | lift2s | x7s | joystick | back | invalid
+# 解析 launch_menu → last:N | single | dual | full | joystick | back | invalid
 _resolve_launch_menu_choice() {
   local choice="$1"
   local n="${LAST_COUNT:-0}"
@@ -894,15 +941,143 @@ _resolve_launch_menu_choice() {
 
   local idx=$((choice - offset))
   case "${idx}" in
-    1) echo "x5" ;;
-    2) echo "r5" ;;
-    3) echo "acone" ;;
-    4) echo "lift" ;;
-    5) echo "lift2s" ;;
-    6) echo "x7s" ;;
-    7) echo "joystick" ;;
+    1) echo "single" ;;
+    2) echo "dual" ;;
+    3) echo "full" ;;
+    4) echo "joystick" ;;
     *) echo "invalid" ;;
   esac
+}
+
+single_arm_menu() {
+  echo "" >&2
+  echo "请选择单臂机型:" >&2
+  echo "  1) X5" >&2
+  echo "  2) R5" >&2
+  echo "  0) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [0-2]: " choice
+  echo "${choice}"
+}
+
+dual_arm_menu() {
+  echo "" >&2
+  echo "请选择双臂 ACone 臂型:" >&2
+  echo "  1) X5" >&2
+  echo "  2) R5" >&2
+  echo "  0) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [0-2]: " choice
+  echo "${choice}"
+}
+
+full_robot_menu() {
+  echo "" >&2
+  echo "请选择整机机型:" >&2
+  echo "  1) Lift" >&2
+  echo "  2) Lift2S" >&2
+  echo "  3) X7S" >&2
+  echo "  0) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [0-3]: " choice
+  echo "${choice}"
+}
+
+# 单臂：X5 支持真机；R5 仅仿真/Isaac/可视化
+do_launch_single_arm() {
+  local arm_choice rc
+  while true; do
+    arm_choice="$(single_arm_menu)"
+    case "${arm_choice}" in
+      1)
+        do_launch "单臂 X5" "ocs2_arm_controller demo.launch.py" "robot:=arx5" \
+          "" "1" "0" "0" "" "" "1"
+        rc=$?
+        [ "${rc}" -eq 2 ] && continue
+        return "${rc}"
+        ;;
+      2)
+        do_launch "单臂 R5" "ocs2_arm_controller demo.launch.py" "robot:=arx5 type:=r5" \
+          "" "1" "0" "0" "" "" "0"
+        rc=$?
+        [ "${rc}" -eq 2 ] && continue
+        return "${rc}"
+        ;;
+      0)
+        echo "返回"
+        return 2
+        ;;
+      *)
+        echo -e "${YELLOW}无效选项${NC}"
+        ;;
+    esac
+  done
+}
+
+# 双臂 ACone：X5 支持真机；R5 仅仿真/Isaac/可视化
+do_launch_dual_arm() {
+  local arm_choice rc
+  while true; do
+    arm_choice="$(dual_arm_menu)"
+    case "${arm_choice}" in
+      1)
+        do_launch "双臂 ACone X5" "ocs2_arm_controller demo.launch.py" "robot:=arx_acone" \
+          "" "0" "0" "0" "" "" "1"
+        rc=$?
+        [ "${rc}" -eq 2 ] && continue
+        return "${rc}"
+        ;;
+      2)
+        do_launch "双臂 ACone R5" "ocs2_arm_controller demo.launch.py" "robot:=arx_acone type:=r5" \
+          "" "0" "0" "0" "" "" "0"
+        rc=$?
+        [ "${rc}" -eq 2 ] && continue
+        return "${rc}"
+        ;;
+      0)
+        echo "返回"
+        return 2
+        ;;
+      *)
+        echo -e "${YELLOW}无效选项${NC}"
+        ;;
+    esac
+  done
+}
+
+# 整机：Lift2S 支持真机；Lift / X7S 仅仿真/Isaac/可视化
+do_launch_full_robot() {
+  local robot_choice rc
+  while true; do
+    robot_choice="$(full_robot_menu)"
+    case "${robot_choice}" in
+      1)
+        do_launch_with_body_mode "Lift" "robot:=arx_lift" "0"
+        rc=$?
+        [ "${rc}" -eq 2 ] && continue
+        return "${rc}"
+        ;;
+      2)
+        do_launch_with_body_mode "Lift2S" "robot:=arx_lift2s" "1"
+        rc=$?
+        [ "${rc}" -eq 2 ] && continue
+        return "${rc}"
+        ;;
+      3)
+        do_launch_with_body_mode "X7S" "robot:=arx_x7s" "0"
+        rc=$?
+        [ "${rc}" -eq 2 ] && continue
+        return "${rc}"
+        ;;
+      0)
+        echo "返回"
+        return 2
+        ;;
+      *)
+        echo -e "${YELLOW}无效选项${NC}"
+        ;;
+    esac
+  done
 }
 
 # 分体 / 全身（lift / lift2s / x7s）
@@ -922,183 +1097,234 @@ body_control_mode_menu() {
   echo "${choice}"
 }
 
-# $1=机型短名(Lift|Lift2S|X7S) $2=base_args
-# 询问分体/全身后 do_launch；返回时不启动
+# $1=机型短名(Lift|Lift2S|X7S) $2=base_args $3=是否允许真机(1/0)
+# 询问分体/全身后 do_launch；选 0 返回上一级整机菜单
 do_launch_with_body_mode() {
   local robot_label="$1"
   local base_args="$2"
-  local body_choice launch_file mode_label
+  local allow_real="${3:-0}"
+  local body_choice launch_file mode_label rc
 
-  body_choice="$(body_control_mode_menu "${robot_label}")"
-  case "${body_choice}" in
-    1)
-      launch_file="ocs2_arm_controller split_body.launch.py"
-      mode_label="分体控制"
-      ;;
-    2)
-      launch_file="ocs2_arm_controller full_body.launch.py"
-      mode_label="全身控制"
-      ;;
-    0)
-      echo "返回"
-      return 0
-      ;;
-    *)
-      echo -e "${YELLOW}无效选项${NC}"
-      exit 1
-      ;;
-  esac
-  do_launch "${robot_label} ${mode_label}" "${launch_file}" "${base_args}" "" "0" "1"
+  while true; do
+    body_choice="$(body_control_mode_menu "${robot_label}")"
+    case "${body_choice}" in
+      1)
+        launch_file="ocs2_arm_controller split_body.launch.py"
+        mode_label="分体控制"
+        # Lift: robot.xacro 默认 dual，分体规划无需额外参数
+        ;;
+      2)
+        launch_file="ocs2_arm_controller full_body.launch.py"
+        mode_label="全身控制"
+        # Lift 全身规划须显式 full（robot.xacro 默认已改为 dual 以修分体 marker）
+        if [[ "${base_args}" == *"robot:=arx_lift"* ]]; then
+          base_args="${base_args} xacro_topology:=full"
+        fi
+        ;;
+      0)
+        echo "返回"
+        return 2
+        ;;
+      *)
+        echo -e "${YELLOW}无效选项${NC}"
+        continue
+        ;;
+    esac
+    do_launch "${robot_label} ${mode_label}" "${launch_file}" "${base_args}" \
+      "" "0" "1" "0" "" "" "${allow_real}"
+    rc=$?
+    # 运行模式/子选项返回 → 回到分体/全身；真正启动结束后回到整机菜单
+    if [ "${rc}" -eq 2 ]; then
+      continue
+    fi
+    return "${rc}"
+  done
 }
 
+# $1=1 时显示真机选项（内部编号 1/2）；否则仅仿真类（菜单 1-5 → 内部 3-7）
 launch_mode_menu() {
+  local allow_real="${1:-1}"
+  local choice
   echo "" >&2
   echo "请选择运行模式:" >&2
-  echo "  1) 真机启动 (Real Hardware)" >&2
-  echo "  2) 真机 headless 模式启动 (Real Hardware, No RViz)" >&2
-  echo "  3) 仿真启动 (Simulation / mock_components)" >&2
-  echo "  4) 仿真 headless 模式启动 (mock_components, No RViz)" >&2
-  echo "  5) Isaac 仿真启动 (hardware:=isaac)" >&2
-  echo "  6) Isaac 仿真 headless 启动 (hardware:=isaac, control_only)" >&2
-  echo "  7) 仅可视化模式启动 (Visualization Only / rviz_only)" >&2
+  if [ "${allow_real}" = "1" ]; then
+    echo "  1) 真机启动 (Real Hardware)" >&2
+    echo "  2) 真机 headless 模式启动 (Real Hardware, No RViz)" >&2
+    echo "  3) 仿真启动 (Simulation / mock_components)" >&2
+    echo "  4) 仿真 headless 模式启动 (mock_components, No RViz)" >&2
+    echo "  5) Isaac 仿真启动 (hardware:=isaac)" >&2
+    echo "  6) Isaac 仿真 headless 启动 (hardware:=isaac, control_only)" >&2
+    echo "  7) 仅可视化模式启动 (Visualization Only / rviz_only)" >&2
+    echo "  0) 返回" >&2
+    echo "" >&2
+    read -r -p "请输入选项 [0-7]: " choice
+    echo "${choice}"
+    return 0
+  fi
+
+  echo "  1) 仿真启动 (Simulation / mock_components)" >&2
+  echo "  2) 仿真 headless 模式启动 (mock_components, No RViz)" >&2
+  echo "  3) Isaac 仿真启动 (hardware:=isaac)" >&2
+  echo "  4) Isaac 仿真 headless 启动 (hardware:=isaac, control_only)" >&2
+  echo "  5) 仅可视化模式启动 (Visualization Only / rviz_only)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-7]: " choice
-  echo "${choice}"
+  read -r -p "请输入选项 [0-5]: " choice
+  case "${choice}" in
+    0) echo "0" ;;
+    1) echo "3" ;;
+    2) echo "4" ;;
+    3) echo "5" ;;
+    4) echo "6" ;;
+    5) echo "7" ;;
+    *) echo "${choice}" ;;
+  esac
 }
 
 need_cmd git || exit 1
 need_cmd colcon || echo -e "${YELLOW}[WARN] 未找到 colcon，编译选项会失败。${NC}"
 
-top_choice="$(menu)"
-
-case "${top_choice}" in
-  1)
-    build_choice="$(build_menu)"
-    case "${build_choice}" in
-      1)
-        echo -e "${GREEN}开始编译 Lift2S 真机所需包...${NC}"
-        if core_deb_mode; then
-          warn_hi_overlay_conflict
-          if arx_from_deb; then
-            echo -e "${BLUE}  模式: 核心包 deb(arms-full 含 arx_ros2_control) + 仅编译 Lift2S 描述包${NC}"
-            if ! run_colcon_packages_up_to "${BUILD_DEB_LIFT2S_PACKAGES[@]}"; then
-              echo -e "${YELLOW}编译过程中出现错误${NC}"
-              exit 1
+# 主菜单循环：子菜单选 0 返回上一级，仅主菜单 0 退出
+while true; do
+  top_choice="$(menu)"
+  case "${top_choice}" in
+    1)
+      while true; do
+        build_choice="$(build_menu)"
+        case "${build_choice}" in
+          1)
+            echo -e "${GREEN}开始编译 Lift2S 真机所需包...${NC}"
+            if core_deb_mode; then
+              warn_hi_overlay_conflict
+              if arx_from_deb; then
+                echo -e "${BLUE}  模式: 核心包 deb(arms-full 含 arx_ros2_control) + 仅编译 Lift2S 描述包${NC}"
+                if ! run_colcon_packages_up_to "${BUILD_DEB_LIFT2S_PACKAGES[@]}"; then
+                  echo -e "${YELLOW}编译过程中出现错误${NC}"
+                  continue
+                fi
+              else
+                echo -e "${BLUE}  模式: 核心包 deb(standard) + 编译 Lift2S 描述与 arx_ros2_control（源码 HI）${NC}"
+                if ! ensure_arx_hi_external; then
+                  continue
+                fi
+                real_pkgs=("${BUILD_DEB_LIFT2S_PACKAGES[@]}" arx_ros2_control)
+                if ! run_colcon_packages_up_to "${real_pkgs[@]}"; then
+                  echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
+                  continue
+                fi
+              fi
+            else
+              if ! ensure_arx_hi_external; then
+                continue
+              fi
+              if ! run_colcon_packages_up_to "${BUILD_LIFT2S_REAL_PACKAGES[@]}"; then
+                echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
+                continue
+              fi
             fi
-          else
-            echo -e "${BLUE}  模式: 核心包 deb(standard) + 编译 Lift2S 描述与 arx_ros2_control（源码 HI）${NC}"
-            ensure_arx_hi_external || exit 1
-            local -a real_pkgs=("${BUILD_DEB_LIFT2S_PACKAGES[@]}" arx_ros2_control)
-            if ! run_colcon_packages_up_to "${real_pkgs[@]}"; then
-              echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
-              exit 1
+            echo -e "${GREEN}编译完成！${NC}"
+            echo -e "${BLUE}启动：单臂可选左/右 CAN；臂仅 full_control；升降可选 hybrid/soft_p${NC}"
+            print_can_hint
+            ;;
+          2)
+            echo -e "${GREEN}开始编译 Lift2S 仿真所需包...${NC}"
+            if core_deb_mode; then
+              warn_hi_overlay_conflict
+              echo -e "${BLUE}  模式: 核心包 deb + 仅编译 Lift2S 描述包${NC}"
+              if ! run_colcon_packages_up_to "${BUILD_DEB_LIFT2S_PACKAGES[@]}"; then
+                echo -e "${YELLOW}编译过程中出现错误${NC}"
+                continue
+              fi
+            else
+              if ! run_colcon_packages_up_to "${BUILD_LIFT2S_SIM_PACKAGES[@]}"; then
+                echo -e "${YELLOW}编译过程中出现错误${NC}"
+                continue
+              fi
             fi
-          fi
-        else
-          ensure_arx_hi_external || exit 1
-          if ! run_colcon_packages_up_to "${BUILD_LIFT2S_REAL_PACKAGES[@]}"; then
-            echo -e "${YELLOW}编译失败。检查 src/arx-ros2-control/external（见 init_repo / 包 README）。${NC}"
-            exit 1
-          fi
-        fi
-        echo -e "${GREEN}编译完成！${NC}"
-        echo -e "${BLUE}启动：单臂可选左/右 CAN；臂仅 full_control；升降可选 hybrid/soft_p${NC}"
-        print_can_hint
-        ;;
-      2)
-        echo -e "${GREEN}开始编译 Lift2S 仿真所需包...${NC}"
-        if core_deb_mode; then
-          warn_hi_overlay_conflict
-          echo -e "${BLUE}  模式: 核心包 deb + 仅编译 Lift2S 描述包${NC}"
-          if ! run_colcon_packages_up_to "${BUILD_DEB_LIFT2S_PACKAGES[@]}"; then
-            echo -e "${YELLOW}编译过程中出现错误${NC}"
-            exit 1
-          fi
-        else
-          if ! run_colcon_packages_up_to "${BUILD_LIFT2S_SIM_PACKAGES[@]}"; then
-            echo -e "${YELLOW}编译过程中出现错误${NC}"
-            exit 1
-          fi
-        fi
-        echo -e "${GREEN}编译完成！${NC}"
-        ;;
-      3)
-        echo -e "${GREEN}开始编译所有仿真所需包...${NC}"
-        if core_deb_mode; then
-          warn_hi_overlay_conflict
-          echo -e "${BLUE}  模式: 核心包 deb + 仅编译全部 ARX 描述包${NC}"
-          if ! run_colcon_packages_up_to "${BUILD_DEB_ALL_PACKAGES[@]}"; then
-            echo -e "${YELLOW}编译过程中出现错误${NC}"
-            exit 1
-          fi
-        else
-          if ! run_colcon_packages_up_to "${BUILD_ALL_SIM_PACKAGES[@]}"; then
-            echo -e "${YELLOW}编译过程中出现错误${NC}"
-            exit 1
-          fi
-        fi
-        echo -e "${GREEN}编译完成！${NC}"
-        ;;
-      0)
-        echo "返回"
-        ;;
-      *)
-        echo -e "${YELLOW}无效选项${NC}"
-        exit 1
-        ;;
-    esac
-    ;;
+            echo -e "${GREEN}编译完成！${NC}"
+            ;;
+          3)
+            echo -e "${GREEN}开始编译所有仿真所需包...${NC}"
+            if core_deb_mode; then
+              warn_hi_overlay_conflict
+              echo -e "${BLUE}  模式: 核心包 deb + 仅编译全部 ARX 描述包${NC}"
+              if ! run_colcon_packages_up_to "${BUILD_DEB_ALL_PACKAGES[@]}"; then
+                echo -e "${YELLOW}编译过程中出现错误${NC}"
+                continue
+              fi
+            else
+              if ! run_colcon_packages_up_to "${BUILD_ALL_SIM_PACKAGES[@]}"; then
+                echo -e "${YELLOW}编译过程中出现错误${NC}"
+                continue
+              fi
+            fi
+            echo -e "${GREEN}编译完成！${NC}"
+            ;;
+          0)
+            echo "返回"
+            break
+            ;;
+          *)
+            echo -e "${YELLOW}无效选项${NC}"
+            ;;
+        esac
+      done
+      ;;
 
-  2)
-    _load_launch_last
-    if [ "${LAST_COUNT:-0}" -gt 0 ]; then
-      echo -e "${BLUE}[INFO] 最近启动记录（最多 ${QS_LAST_LAUNCH_MAX} 条）: config/launch_last.conf${NC}"
-    fi
-    launch_choice="$(launch_menu)"
-    launch_action="$(_resolve_launch_menu_choice "${launch_choice}")"
-    case "${launch_action}" in
-      last:*)
-        _do_last_launch "${launch_action#last:}"
-        ;;
-      x5)
-        do_launch "单臂 X5" "ocs2_arm_controller demo.launch.py" "robot:=arx5" "" "1" "0"
-        ;;
-      r5)
-        do_launch "单臂 R5" "ocs2_arm_controller demo.launch.py" "robot:=arx5 type:=r5" "" "1" "0"
-        ;;
-      acone)
-        do_launch "双臂 ACone" "ocs2_arm_controller demo.launch.py" "robot:=arx_acone" "" "0" "0"
-        ;;
-      lift)
-        do_launch_with_body_mode "Lift" "robot:=arx_lift"
-        ;;
-      lift2s)
-        do_launch_with_body_mode "Lift2S" "robot:=arx_lift2s"
-        ;;
-      x7s)
-        do_launch_with_body_mode "X7S" "robot:=arx_x7s"
-        ;;
-      joystick)
-        do_launch_joystick_teleop
-        ;;
-      back)
-        echo "返回"
-        ;;
-      *)
-        echo -e "${YELLOW}无效选项${NC}"
-        exit 1
-        ;;
-    esac
-    ;;
+    2)
+      while true; do
+        launch_rc=0
+        _load_launch_last
+        if [ "${LAST_COUNT:-0}" -gt 0 ]; then
+          echo -e "${BLUE}[INFO] 最近启动记录（最多 ${QS_LAST_LAUNCH_MAX} 条）: config/launch_last.conf${NC}"
+        fi
+        launch_choice="$(launch_menu)"
+        launch_action="$(_resolve_launch_menu_choice "${launch_choice}")"
+        case "${launch_action}" in
+          last:*)
+            _do_last_launch "${launch_action#last:}"
+            launch_rc=$?
+            ;;
+          single)
+            do_launch_single_arm
+            launch_rc=$?
+            ;;
+          dual)
+            do_launch_dual_arm
+            launch_rc=$?
+            ;;
+          full)
+            do_launch_full_robot
+            launch_rc=$?
+            ;;
+          joystick)
+            do_launch_joystick_teleop
+            launch_rc=$?
+            ;;
+          back)
+            echo "返回"
+            break
+            ;;
+          *)
+            echo -e "${YELLOW}无效选项${NC}"
+            continue
+            ;;
+        esac
+        # 与 fa_w2 一致：真正启动（或启动失败）后结束脚本；仅「返回」(2) 留在启动菜单
+        if [ "${launch_rc}" -eq 2 ]; then
+          continue
+        fi
+        exit "${launch_rc}"
+      done
+      ;;
 
-  0)
-    echo "退出"
-    exit 0
-    ;;
+    0)
+      echo "退出"
+      exit 0
+      ;;
 
-  *)
-    echo -e "${YELLOW}无效选项，请重新运行脚本${NC}"
-    exit 1
-    ;;
-esac
+    *)
+      echo -e "${YELLOW}无效选项${NC}"
+      ;;
+  esac
+done
