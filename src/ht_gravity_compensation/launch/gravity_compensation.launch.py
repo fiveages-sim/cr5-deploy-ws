@@ -43,22 +43,25 @@ FALLBACK_ARM_JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6
 FALLBACK_GRIPPER_JOINT = "gripper_joint"
 FALLBACK_ARM_MAX_EFFORT = [21.0, 36.0, 36.0, 21.0, 10.0, 10.0]
 
-# 悬停软刚度（真机 full_control 下写入 kp/kd 命令接口）
+# 悬停软刚度（真机不再导出 kp/kd 命令接口时 use_pd 自动回退，此处为硬参数模式保留）
 HOLD_KP = [0.01]
 HOLD_KD = [0.1]
 
 
 def _parse_arm_interfaces(description_package):
-    """从描述包 xacro/ros2_control/interfaces.xacro 解析关节信息。
+    """从描述包 xacro 解析关节信息与力矩限幅。
+
+    - interfaces.xacro：关节名（${prefix} 模板名）
+    - robot.xacro：hardware 段 <param name="max_torques"> CSV（每臂 7 值，取前 6 个臂关节）
 
     Returns:
         (arm_joints, gripper_joint, arm_max_efforts)：均为裸名 / 裸值
         （无 left_/right_ 前缀；前缀由 _joints_for_type 按 type 生成）。
     """
+    base_dir = os.path.join(
+        get_package_share_directory(description_package), "xacro", "ros2_control")
     try:
-        interfaces_file = os.path.join(
-            get_package_share_directory(description_package),
-            "xacro", "ros2_control", "interfaces.xacro")
+        interfaces_file = os.path.join(base_dir, "interfaces.xacro")
         tree = ET.parse(interfaces_file)
     except (OSError, ET.ParseError, Exception) as e:
         print(f"[WARN] Failed to parse interfaces.xacro from '{description_package}': "
@@ -66,7 +69,6 @@ def _parse_arm_interfaces(description_package):
         return (FALLBACK_ARM_JOINTS, FALLBACK_GRIPPER_JOINT, FALLBACK_ARM_MAX_EFFORT)
 
     joints_in_order = []
-    torque_map = {}
     for joint_el in tree.getroot().iter("joint"):
         name = joint_el.get("name")
         if not name:
@@ -76,12 +78,21 @@ def _parse_arm_interfaces(description_package):
         if not name:
             continue
         joints_in_order.append(name)
-        for param in joint_el.iter("param"):
-            if param.get("name") == "max_torque" and param.text:
-                try:
-                    torque_map[name] = float(param.text.strip())
-                except ValueError:
-                    pass
+
+    # max_torques 已从 interfaces.xacro 移至 robot.xacro hardware 段（CSV，每臂 7 值）
+    max_efforts_default = list(FALLBACK_ARM_MAX_EFFORT)
+    try:
+        robot_file = os.path.join(base_dir, "robot.xacro")
+        robot_tree = ET.parse(robot_file)
+        for param in robot_tree.getroot().iter("param"):
+            if param.get("name") == "max_torques" and param.text:
+                values = [float(v.strip()) for v in param.text.split(",") if v.strip()]
+                if len(values) >= 6:
+                    max_efforts_default = values[:6]
+                break
+    except (OSError, ET.ParseError, ValueError, Exception) as e:
+        print(f"[WARN] Failed to parse max_torques from robot.xacro: "
+              f"{e}; using fallback {FALLBACK_ARM_MAX_EFFORT}")
 
     arm_joints = []
     max_efforts = []
@@ -92,13 +103,15 @@ def _parse_arm_interfaces(description_package):
                 gripper_joint = name
         else:
             arm_joints.append(name)
-            max_efforts.append(torque_map.get(name, 10.0))
+            max_efforts.append(
+                max_efforts_default[len(arm_joints) - 1]
+                if len(arm_joints) - 1 < len(max_efforts_default) else 10.0)
 
     if not arm_joints or gripper_joint is None:
         print("[WARN] interfaces.xacro parse yielded no arm joints; using fallback")
         return (FALLBACK_ARM_JOINTS, FALLBACK_GRIPPER_JOINT, FALLBACK_ARM_MAX_EFFORT)
 
-    print(f"[INFO] Parsed from {interfaces_file}: "
+    print(f"[INFO] Parsed from {interfaces_file} (+robot.xacro max_torques): "
           f"arm joints={arm_joints} gripper={gripper_joint} max_effort={max_efforts}")
     return arm_joints, gripper_joint, max_efforts
 

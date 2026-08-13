@@ -39,7 +39,7 @@ gravity_compensation_controller:
     use_pd: true
     hold_kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
     hold_kd: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-    # 力矩限幅（Nm），与 interfaces.xacro 的 max_torque 一致；留空则不限幅
+    # 力矩限幅（Nm），与 robot.xacro hardware 段 max_torques（每臂前 6 值）一致；留空则不限幅
     max_effort: [21.0, 36.0, 36.0, 21.0, 10.0, 10.0,
                  21.0, 36.0, 36.0, 21.0, 10.0, 10.0]
     # 世界系重力加速度（双臂 body_rpy 非零时需按安装方向旋转）
