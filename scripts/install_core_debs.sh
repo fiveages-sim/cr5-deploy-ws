@@ -6,7 +6,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DEB_CONF="${REPO_DIR}/deb_versions.conf"
+if [[ -f "${REPO_DIR}/config/deb_versions.conf" ]]; then
+  DEB_CONF="${REPO_DIR}/config/deb_versions.conf"
+elif [[ -f "${REPO_DIR}/deb_versions.conf" ]]; then
+  DEB_CONF="${REPO_DIR}/deb_versions.conf"
+else
+  DEB_CONF="${REPO_DIR}/config/deb_versions.conf"
+fi
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 DEB_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
 DOWNLOAD_DIR="${REPO_DIR}/.deb_cache"
@@ -69,7 +75,7 @@ usage() {
                           [--only <list>] [--channel <latest|pre-release>]
                           [--arms-variant <full|standard>] [--cache-only]
 
-从 deb_versions.conf 读取仓库信息，按依赖顺序安装核心 deb 包：
+从 config/deb_versions.conf 读取仓库信息，按依赖顺序安装核心 deb 包：
   1. ros-jazzy-ocs2
   2. ros-jazzy-robot-descriptions-common
   3. ros-jazzy-arms-ros2-control-full（默认，含 arx_ros2_control 等 HI）

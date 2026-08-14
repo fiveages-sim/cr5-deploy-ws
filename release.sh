@@ -3,7 +3,7 @@
 # ARX Lift2S / ACone 工作空间 — deb 安装与发布打包脚本
 # 使用方：解压发布 zip → ./release.sh --install → ./quick_start.sh
 #         --package 含 .git（可 git pull）；--package-no-git 为纯快照包（更小）
-# deb 版本与仓库以 deb_versions.conf 为准（非 GitHub Latest）
+# deb 钉版清单：config/deb_versions.conf（无则回退根目录旧路径）
 # deb 安装顺序: ocs2 → common → arms-ros2-control-full（含 arx_ros2_control）
 #
 # 用法:
@@ -20,7 +20,13 @@ set -u
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEB_CACHE_DIR="${WS_DIR}/.deb_cache"
 DIST_DIR="${WS_DIR}/dist"
-DEB_CONF="${WS_DIR}/deb_versions.conf"
+if [[ -f "${WS_DIR}/config/deb_versions.conf" ]]; then
+  DEB_CONF="${WS_DIR}/config/deb_versions.conf"
+elif [[ -f "${WS_DIR}/deb_versions.conf" ]]; then
+  DEB_CONF="${WS_DIR}/deb_versions.conf"
+else
+  DEB_CONF="${WS_DIR}/config/deb_versions.conf"
+fi
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 DEB_INSTALL_PATHS=()
 RELEASE_CHANNEL="${RELEASE_CHANNEL:-conf}"

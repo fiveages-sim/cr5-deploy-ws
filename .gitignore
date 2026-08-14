@@ -27,6 +27,9 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Local machine profile (copy from robot.template.yaml)
+config/robot.local.yaml
+
 # Local quick_start last-launch record
 config/launch_last.conf
 
