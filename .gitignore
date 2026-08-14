@@ -12,6 +12,7 @@ __pycache__/
 *.so
 
 # IDE files
+.cursor/
 .vscode/
 .idea/
 *.swp
@@ -25,3 +26,16 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Local machine profile (copy from robot.template.yaml)
+config/robot.local.yaml
+
+# Local quick_start last-launch record
+config/launch_last.conf
+
+# deb 安装脚本下载缓存（install_core_debs.sh / release.sh）
+.deb_cache/
+
+# release.sh 发布产物
+dist/
+*.zip

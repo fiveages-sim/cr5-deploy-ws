@@ -1,0 +1,48 @@
+# Machine profile — copy to robot.local.yaml (gitignored).
+# 参考：https://github.com/fiveages-sim/fa-deploy-ws (config/robot.template.yaml)
+#
+# 本机硬件覆盖（CAN / 升降模式 / 可选控制器 patch）。
+# 复制：cp config/robot.template.yaml config/robot.local.yaml
+
+platform:
+  # ARX Lift2S：固定基座 + 棱柱升降；臂 HI 仅 full_control（MIT MIX）
+  variant: ""                  # "" | 预留现场变体
+  arm_ctrl_mode: full_control  # 真机臂：full_control
+  lift_motor_mode: hybrid      # hybrid | soft_p | position
+
+defaults:
+  end_effectors:
+    left: default
+    right: default
+  left_dyn_param: []
+  right_dyn_param: []
+
+hardware:
+  lift_motor_mode: hybrid       # hybrid | soft_p
+  # Soft-P / Hybrid 热调也可在运行时 ros2 param set /controller_manager arx_lift.*
+  lift_max_vel: 0.20
+  lift_max_torque: 15.0
+
+control:
+  patch:
+    # 按控制器名覆盖 home（一份配置可同时写；启动哪项加载哪个控制器）。
+    # 双臂 ACone / Lift2S 分体臂：12 维 left(1-6)+right(1-6)，无 lift
+    ocs2_arm_controller:
+      ros__parameters:
+        home_1: [0.0, 0.594, 0.306, 0.331, 0.0, 0.0, 0.0, 0.594, 0.306, 0.331, 0.0, 0.0]
+        home_2: [0.0, 1.30, 0.60, 0.60, 0.0, 0.0, 0.0, 1.30, 0.60, 0.60, 0.0, 0.0]
+        home_3: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # Lift2S 分体：升降单独由 body_joint_controller（1 维 lift_joint，单位 m）
+    body_joint_controller:
+      ros__parameters:
+        home_1: [0.3]
+        home_2: [0.3]
+        home_3: [0.0]
+
+    # Lift2S 全身：13 维 lift + left(1-6) + right(1-6)
+    ocs2_wbc_controller:
+      ros__parameters:
+        home_1: [0.3, 0.0, 0.594, 0.306, 0.331, 0.0, 0.0, 0.0, 0.594, 0.306, 0.331, 0.0, 0.0]
+        home_2: [0.3, 0.0, 1.30, 0.60, 0.60, 0.0, 0.0, 0.0, 1.30, 0.60, 0.60, 0.0, 0.0]
+        home_3: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
