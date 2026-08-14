@@ -14,10 +14,10 @@ Panthera HT（单臂 / 双臂）**独立重力补偿控制器包**，基于 **Pi
 │    ┌─────────────────────────────────────────────┐                   │
 │    │ 读 position 状态 → 组装 Pinocchio q（按名称） │                   │
 │    │ rnea(q, v=0, a=0) → 静态重力矩 τ_g          │                   │
-│    │ 写入命令接口:                                │                   │
+│    │ 写入命令接口（均可选，缺失自动跳过）:          │                   │
 │    │   effort  = clamp(τ_g)      ← 重力前馈      │                   │
 │    │   position = 当前值          ← 保位（关键）  │                   │
-│    │   kp/kd   = 软刚度（可选）    ← 弱刚度悬停   │                   │
+│    │   velocity = 0               ← 速度前馈清零  │                   │
 │    └─────────────────────────────────────────────┘                   │
 │                          │ command interfaces                        │
 │                          ▼                                           │
@@ -30,7 +30,12 @@ Panthera HT（单臂 / 双臂）**独立重力补偿控制器包**，基于 **Pi
 - 重力矩：`pinocchio::rnea`（零速度、零加速度），即纯静态重力补偿。
 - **保位语义**：硬件接口在 `full_control` 下会把 position 命令直接下发电机，
   因此控制器每个周期把 `position` 写为**当前实测值**，防止未写 position 时被当作 0 目标（回零）。
-- 夹爪（`hold_joints`）：只 claim `position` 状态/命令，位置跟随当前值，保持不动作。
+- **命令接口可选**：`command_interface_configuration()` 返回 `ALL`（只 claim 硬件实际
+  导出的接口），`on_activate` 按名挑选 `position`/`velocity`/`effort`：
+  - `position` 有 → 写当前值；无 → 跳过（警告）
+  - `velocity` 有 → 写 0；无 → 跳过（警告）
+  - `effort` 有 → 写重力矩；无 → 警告一次，控制器以位置保持模式继续运行（不退出）
+- 夹爪（`hold_joints`）：`position` 状态必需、命令可选，位置跟随当前值，保持不动作。
 - 模型中没有状态来源的关节（如 mimic 的 `gripper_joint2`）q 置 0，对重力矩影响可忽略。
 
 ## 依赖
@@ -42,10 +47,8 @@ Panthera HT（单臂 / 双臂）**独立重力补偿控制器包**，基于 **Pi
 ## 编译
 
 ```bash
-cd ~/ht-deploy-ws
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-select ht_gravity_compensation --symlink-install
-source install/setup.bash
 ```
 
 ## 使用
@@ -53,8 +56,9 @@ source install/setup.bash
 ### Mock 验证（无需硬件/电机）
 
 ```bash
+source install/setup.bash
 ros2 launch ht_gravity_compensation gravity_compensation.launch.py
-# 默认 hardware:=mock_components、type:=dual；launch 自动置 use_pd:=false
+# 默认 hardware:=mock_components、type:=dual
 ```
 
 检查控制器状态：
@@ -70,20 +74,42 @@ ros2 control list_controllers --controller-manager /drag_controller/controller_m
 ros2 launch ht_gravity_compensation gravity_compensation.launch.py hardware:=real
 ```
 
-- `hardware:=real` 时 launch 自动 `use_pd:=true`（真机硬件导出 kp/kd 命令接口）。
-- 单臂/单侧：`type:=single` / `type:=left` / `type:=right`（launch 按 type 生成关节列表并覆盖参数）。
+- 单臂/单侧：`type:=single` / `type:=left` / `type:=right`（URDF 由 xacro 按 type 展开）。
+
+### 低刚度（拖动）模式
+
+kp/kd 是硬件接口参数，通过 `hardware_` 前缀启动参数设置（仅 `hardware:=real/real_usb`
+生效；每臂 6 值 CSV，dual 时 xacro 自动拼接为 12 值）：
+
+```bash
+ros2 launch ht_gravity_compensation gravity_compensation.launch.py hardware:=real \
+  hardware_joint_kp:="0.01, 0.01, 0.01, 0.01, 0.01, 0.01" \
+  hardware_joint_kd:="0.1, 0.1, 0.1, 0.1, 0.1, 0.1" \
+  hardware_gripper_kp:=0.001 hardware_gripper_kd:=0.01
+```
+
+kp/kd 经 xacro 写入 URDF hardware 段，硬件接口加载即生效（无需启动后调参数服务器）。
 
 ### Launch 参数
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `type` | `dual` | 臂组合：`single` / `left` / `right` / `dual` |
-| `hardware` | `mock_components` | `real`（ht_ros2_control）\| `mock_components` \| `gz` \| `isaac` |
-| `control_mode` | `full_control` | 硬件接口控制模式（`full_control` \| `pd_control`） |
-| `use_pd` | `auto` | 写 kp/kd 命令接口：`auto`（real 才开）\| `true` \| `false` |
+| `hardware` | `mock_components` | `real` / `real_usb`（ht_ros2_control）\| `mock_components` \| `gz` \| `isaac` |
 | `namespace` | `drag_controller` | 所有节点（RSP/CM/RViz）的 ROS namespace；`/` = 全局 |
 | `rviz` | `false` | 是否启动 RViz2（默认不启动） |
 | `description_package` | `panthera_ht_description` | 描述包：URDF 与关节接口均从该包解析 |
+
+#### 前缀参数（与 ocs2 demo.launch.py 同格式，经 `build_xacro_mappings` 透传）
+
+| 前缀 | 生效条件 | 示例 |
+|---|---|---|
+| `xacro_xxx:=` | 总是生效 | `xacro_control_mode:=pd_control`、`xacro_config_file:=/path/PantheraDual.yaml` |
+| `hardware_xxx:=` | 仅 `hardware:=real/real_usb` | `hardware_joint_kp:=`、`hardware_config_file:=` |
+| `robot_profile:=` | 提供 `hardware:`/`xacro:` 段（robot.local.yaml） | `robot_profile:=/path/robot.local.yaml` |
+
+kp/kd/control_mode 等硬件参数**没有专用 launch 参数**，统一走前缀参数
+（`hardware_` 真机 / `xacro_` 通用），默认值由描述包 xacro 决定。
 
 ### 关节信息自动解析（不再硬编码）
 
@@ -105,18 +131,18 @@ ros2 launch ht_gravity_compensation gravity_compensation.launch.py rviz:=true
 RViz 与 RSP/CM 处于同一 namespace，配置（`config/gravity_compensation.rviz`）使用
 相对话题名（`tf`、`robot_description`），固定坐标系为 `world`。
 
-### 参数（`config/gravity_compensation.yaml`，launch 按 type/hardware 自动覆盖部分参数）
+### 参数（`config/gravity_compensation.yaml`）
 
 | 参数 | 说明 | 默认（双臂） |
 |---|---|---|
 | `joints` | 重力补偿关节（臂关节） | 12 个 `left/right_joint1..6` |
 | `hold_joints` | 仅位置保持关节 | `left/right_gripper_joint` |
-| `use_pd` | 写 kp/kd 命令接口（需硬件导出） | true（real） |
-| `hold_kp` | 悬停刚度 | `[5.0]×12` |
-| `hold_kd` | 悬停阻尼 | `[0.5]×12` |
 | `max_effort` | 力矩限幅 Nm（空 = 不限幅） | `[21,36,36,21,10,10]×2` |
 | `gravity_vector` | 世界系重力加速度 | `[0, 0, -9.81]` |
 | `urdf_param` | URDF 来源参数 | `robot_description` |
+
+> kp/kd 由硬件接口（`ht_ros2_control`）作为 ROS 参数管理（rqt 可调），
+> 本控制器不写 kp/kd 命令接口，因此无 `use_pd`/`hold_kp`/`hold_kd` 参数。
 
 ## 注意事项（已确认的硬件行为）
 
@@ -125,7 +151,6 @@ RViz 与 RSP/CM 处于同一 namespace，配置（`config/gravity_compensation.r
 2. **与 OCS2 控制器互斥**：`ocs2_arm_controller` 与本控制器都 claim 相同的命令接口，
    不能同时激活；可用 `ros2 control swap_controllers` 切换。
 3. **双臂 `body_rpy` 非零**时，`gravity_vector` 需按安装方向旋转（默认假设竖直安装）。
-4. mock 硬件（`GenericSystem`）无 kp/kd 命令接口，`use_pd` 必须为 false（launch 已自动处理）。
 
 ## 验证（已完成）
 

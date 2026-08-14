@@ -162,9 +162,10 @@ detect_module_state() {
   local path="$1" deb_pkg="$2"
   local has_deb=0 has_src=0
   is_pkg_installed "${deb_pkg}" && has_deb=1
-  # arms-full 与旧标准包都算 arms deb
-  if [ "${deb_pkg}" = "ros-jazzy-arms-ros2-control-full" ]; then
-    is_pkg_installed "ros-jazzy-arms-ros2-control" && has_deb=1
+  # arms 两个变体（full/standard）都算 arms deb
+  if [ "${deb_pkg}" = "ros-${ROS_DISTRO}-arms-ros2-control-full" ] || [ "${deb_pkg}" = "ros-${ROS_DISTRO}-arms-ros2-control" ]; then
+    is_pkg_installed "ros-${ROS_DISTRO}-arms-ros2-control" && has_deb=1
+    is_pkg_installed "ros-${ROS_DISTRO}-arms-ros2-control-full" && has_deb=1
   fi
   path_is_git_checkout "${path}" && has_src=1
   if [ "${has_deb}" -eq 1 ] && [ "${has_src}" -eq 1 ]; then
@@ -206,6 +207,18 @@ init_workspace_submodules() {
   print_info ""
   print_info "当前子模块状态："
   git -C "${REPO_DIR}" submodule status
+}
+
+# 初始化并更新单个顶层子模块（含嵌套子模块，不切换分支）
+# 用于切换安装方式时只动变更模块，不影响其他子模块
+# $1 = 顶层子模块路径（相对 REPO_DIR）
+init_module_submodules() {
+  local path="$1"
+  print_info "拉取/更新子模块: ${path}"
+  git -C "${REPO_DIR}" submodule sync
+  git -C "${REPO_DIR}" submodule update --init -- "${path}" \
+    || print_warn "初始化 ${path} 失败"
+  init_submodule_recursive "" "${path}"
 }
 
 # 仅对源码子模块路径运行 rosdep

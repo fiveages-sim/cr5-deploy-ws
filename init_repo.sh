@@ -63,6 +63,47 @@ set_use_deb_for_module() {
   esac
 }
 
+# 模块当前是否已安装 deb（arms 两个变体 full/standard 都算）
+module_is_deb_installed() {
+  local m="$1" pkg
+  pkg="$(module_short_to_deb "$m")"
+  is_pkg_installed "${pkg}" && return 0
+  if [ "${m}" = "arms" ]; then
+    is_pkg_installed "ros-${ROS_DISTRO}-arms-ros2-control" && return 0
+    is_pkg_installed "ros-${ROS_DISTRO}-arms-ros2-control-full" && return 0
+  fi
+  return 1
+}
+
+# 模块安装方式是否发生变化（返回 0=需要操作）
+# 既无 deb 也无源码（none）时按目标方式执行
+module_needs_action() {
+  local m="$1" tgt cur has_src
+  tgt="$(get_use_deb_for_module "$m")"
+  cur=0
+  module_is_deb_installed "$m" && cur=1
+  has_src=0
+  path_is_git_checkout "$(module_short_to_path "$m")" && has_src=1
+  # 无 deb 也无源码（none）：按目标方式执行
+  if [ "${cur}" -eq 0 ] && [ "${has_src}" -eq 0 ]; then
+    return 0
+  fi
+  # mixed 残留：目标 deb 但源码目录仍在 → 需要操作（清理源码）
+  if [ "${tgt}" -eq 1 ] && [ "${has_src}" -eq 1 ]; then
+    return 0
+  fi
+  [ "${cur}" -ne "${tgt}" ]
+}
+
+# arms 是否需要操作：安装方式变化，或已装 deb 变体与目标变体不同（需重装）
+arms_needs_action() {
+  local cur=""
+  module_needs_action "arms" && return 0
+  is_pkg_installed "ros-${ROS_DISTRO}-arms-ros2-control-full" && cur="full"
+  is_pkg_installed "ros-${ROS_DISTRO}-arms-ros2-control" && cur="standard"
+  [ -n "${cur}" ] && [ "${cur}" != "${ARMS_VARIANT}" ]
+}
+
 # 逐模块选择 source/deb（回车=deb）
 prompt_sd() {
   local name="$1" var="$2" ans
@@ -157,6 +198,7 @@ flow_init() {
 
 flow_switch() {
   local m p pkg st tgt
+  local -a KEEP_MODULES=()
   echo ""
   echo "当前模块状态："
   for m in ocs2 arms common; do
@@ -178,42 +220,106 @@ flow_switch() {
       s|S|source) set_use_deb_for_module "${m}" 0 ;;
       d|D|deb) set_use_deb_for_module "${m}" 1 ;;
       *)
-        case "${st}" in
-          deb) set_use_deb_for_module "${m}" 1 ;;
-          *) set_use_deb_for_module "${m}" 0 ;;
-        esac
+        # k=keep：完全保持当前状态（含 mixed 残留），不卸载 deb、不清理源码、不安装、不拉取
+        KEEP_MODULES+=("${m}")
+        if module_is_deb_installed "${m}"; then
+          set_use_deb_for_module "${m}" 1
+        else
+          set_use_deb_for_module "${m}" 0
+        fi
         ;;
     esac
   done
 
-  if [ "$USE_DEB_OCS2" -eq 1 ] || [ "$USE_DEB_ARMS" -eq 1 ] || [ "$USE_DEB_COMMON" -eq 1 ]; then
+  # 仅当有非 keep 模块目标为 deb 时才询问通道/变体
+  local any_deb=0
+  for m in ocs2 arms common; do
+    if [[ " ${KEEP_MODULES[*]} " != *" ${m} "* ]] && [ "$(get_use_deb_for_module "${m}")" -eq 1 ]; then
+      any_deb=1
+    fi
+  done
+  if [ "${any_deb}" -eq 1 ]; then
     prompt_channel
   fi
-  if [ "$USE_DEB_ARMS" -eq 1 ]; then
+  if [[ " ${KEEP_MODULES[*]} " != *" arms "* ]] && [ "$USE_DEB_ARMS" -eq 1 ]; then
     prompt_arms_variant
   fi
 
-  # deb → source：卸载对应已装 deb（避免与源码冲突）
-  local -a to_uninstall=()
+  # ===== 仅对改变安装方式的模块执行操作（其他模块 git/deb 均不动） =====
+  local -a to_source=() to_deb=() to_clear=() to_pull=()
+  local arms_changed=0
+
   for m in ocs2 arms common; do
-    if [ "$(get_use_deb_for_module "${m}")" -eq 0 ]; then
-      pkg="$(module_short_to_deb "${m}")"
-      if is_pkg_installed "${pkg}"; then
-        to_uninstall+=("${m}")
-      elif [ "${m}" = "arms" ] && is_pkg_installed "ros-${ROS_DISTRO}-arms-ros2-control"; then
-        to_uninstall+=("${m}")
-      fi
+    # keep：保持当前状态（含 mixed），不做任何修改
+    if [[ " ${KEEP_MODULES[*]} " == *" ${m} "* ]]; then
+      continue
+    fi
+    if [ "${m}" = "arms" ]; then
+      arms_needs_action || continue
+      arms_changed=1
+    else
+      module_needs_action "${m}" || continue
+    fi
+    if [ "$(get_use_deb_for_module "${m}")" -eq 1 ]; then
+      to_deb+=("${m}")
+      path_has_content "$(module_short_to_path "${m}")" && to_clear+=("$(module_short_to_path "${m}")")
+    else
+      to_source+=("${m}")
     fi
   done
-  if [ "${#to_uninstall[@]}" -gt 0 ]; then
-    local IFS=,
-    print_info "以下模块改为源码，将先卸载对应 deb: ${to_uninstall[*]}"
-    uninstall_core_debs "${to_uninstall[*]}" || print_warn "部分 deb 卸载失败，继续..."
+
+  # arms 附属：ht-ros2-control 跟随 arms 变化（full deb 已含 ht_ros2_control）
+  if [ "${arms_changed}" -eq 1 ]; then
+    if [ "$USE_DEB_ARMS" -eq 1 ] && [ "${ARMS_VARIANT}" = "full" ]; then
+      path_has_content "src/ht-ros2-control" && to_clear+=("src/ht-ros2-control")
+    elif ! path_is_git_checkout "src/ht-ros2-control"; then
+      to_pull+=("src/ht-ros2-control")
+    fi
   fi
 
-  cleanup_deb_module_sources
-  init_workspace_submodules
-  install_selected_debs
+  if [ "${#to_source[@]}" -eq 0 ] && [ "${#to_deb[@]}" -eq 0 ] && [ "${#to_clear[@]}" -eq 0 ] && [ "${#to_pull[@]}" -eq 0 ]; then
+    print_info "没有模块改变安装方式，无需操作"
+    return 0
+  fi
+
+  echo ""
+  print_info "将执行以下操作（仅变更模块）："
+  for m in "${to_source[@]}"; do
+    print_info "  - ${m}: 卸载 deb → 拉取/更新源码子模块"
+  done
+  for p in "${to_clear[@]}"; do
+    print_info "  - 清空子模块内容（改由 deb 提供）: ${p}"
+  done
+  for m in "${to_deb[@]}"; do
+    print_info "  - ${m}: 安装 deb（通道: ${DEB_CHANNEL}）"
+  done
+  for p in "${to_pull[@]}"; do
+    print_info "  - 拉取源码子模块: ${p}"
+  done
+
+  if [ "${#to_clear[@]}" -gt 0 ]; then
+    if ! confirm_yn "确认清空上述源码目录内容？"; then
+      print_warn "已取消（清空源码目录是破坏性操作）"
+      return 0
+    fi
+  fi
+
+  # 1) deb → source：仅卸载变更包 deb，仅拉取/更新变更子模块
+  for m in "${to_source[@]}"; do
+    uninstall_core_debs "${m}" || print_warn "卸载 ${m} deb 失败，继续..."
+    init_module_submodules "$(module_short_to_path "${m}")"
+  done
+  for p in "${to_pull[@]}"; do
+    init_module_submodules "${p}"
+  done
+
+  # 2) source → deb：仅清空变更子模块内容，仅安装变更包 deb
+  for p in "${to_clear[@]}"; do
+    clear_submodule_content "${p}"
+  done
+  for m in "${to_deb[@]}"; do
+    install_core_debs "${m}" || print_error "安装 ${m} deb 失败"
+  done
 }
 
 flow_deb_only() {

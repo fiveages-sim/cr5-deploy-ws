@@ -31,8 +31,13 @@ ht_from_deb() {
 
 source_ros_underlay() {
   if [ -f /opt/ros/jazzy/setup.bash ]; then
+    # ROS2 ament 生成的 setup 脚本会引用未定义变量（如 AMENT_TRACE_SETUP_FILES、
+    # AMENT_PYTHON_EXECUTABLE），在 set -u 下会报 "unbound variable"，
+    # 因此 source 期间临时关闭 nounset
+    set +u
     # shellcheck disable=SC1091
     source /opt/ros/jazzy/setup.bash
+    set -u
     return 0
   fi
   echo -e "${YELLOW}[WARN] 未找到 /opt/ros/jazzy/setup.bash${NC}"
@@ -42,8 +47,11 @@ source_ros_underlay() {
 source_workspace_env() {
   source_ros_underlay || return 1
   if [ -f "${WS_DIR}/install/setup.bash" ]; then
+    # colcon 生成的 setup 脚本同样引用未定义变量（COLCON_TRACE 等），source 期间临时关闭
+    set +u
     # shellcheck disable=SC1090
     source "${WS_DIR}/install/setup.bash"
+    set -u
     echo -e "${GREEN}[INFO] 已 source 环境:${NC}"
     echo -e "${BLUE}  /opt/ros/jazzy/setup.bash${NC}"
     echo -e "${BLUE}  ${WS_DIR}/install/setup.bash${NC}"
@@ -283,34 +291,17 @@ ask_drag_mode() {
   esac
 }
 
-# 拖动模式: launch 运行中把硬件 kp/kd 调低（ROS 参数，IO 线程 ~200ms 内生效）
-apply_drag_mode() {
-  local robot_type="${1:-single}"
-  local count=6
-  [ "${robot_type}" = "dual" ] && count=12
-  local kp_list="[0.01" kd_list="[0.1" i
-  for ((i = 1; i < count; i++)); do
-    kp_list+=", 0.01"
-    kd_list+=", 0.1"
+# 拖动模式: 生成低刚度 kp/kd 的 hardware_ 前缀参数（启动时经 xacro 直接写入
+# URDF <param>，硬件加载即生效；无需启动后再调参数服务器）
+# 每臂 6 值 CSV；dual 时 robot.xacro 自动拼接为 12 值（勿传 12 值，会拼成 24）
+# 仅 hardware:=real/real_usb 时 hardware_ 前缀才生效（build_xacro_mappings）
+drag_mode_args() {
+  local kp="0.01" kd="0.1" i
+  for ((i = 1; i < 6; i++)); do
+    kp+=", 0.01"
+    kd+=", 0.1"
   done
-  kp_list+="]"
-  kd_list+="]"
-
-  # 等待硬件节点参数就绪（launch 完成 + 硬件加载后）
-  local tries=0
-  while ! ros2 param get /panthera_ht_system joint_kp >/dev/null 2>&1; do
-    tries=$((tries + 1))
-    if [ "${tries}" -ge 60 ]; then
-      echo -e "${YELLOW}[WARN] 硬件节点参数未就绪，跳过拖动模式设置${NC}" >&2
-      return 1
-    fi
-    sleep 1
-  done
-  ros2 param set /panthera_ht_system joint_kp "${kp_list}" >/dev/null
-  ros2 param set /panthera_ht_system joint_kd "${kd_list}" >/dev/null
-  ros2 param set /panthera_ht_system gripper_kp 0.001 >/dev/null
-  ros2 param set /panthera_ht_system gripper_kd 0.01 >/dev/null
-  echo -e "${BLUE}[INFO] 拖动模式已启用：joint_kp=${kp_list} joint_kd=${kd_list}${NC}"
+  echo "hardware_joint_kp:=${kp} hardware_joint_kd:=${kd} hardware_gripper_kp:=0.001 hardware_gripper_kd:=0.01"
 }
 
 # 重现一条历史启动配置 (idx: 0=最近, 1=次近)
@@ -387,11 +378,11 @@ _run_ocs2_demo() {
 
   echo -e "${GREEN}启动${arm_label}${mode_label}...${NC}"
   if [ "${jdrag}" = "true" ]; then
-    # 拖动模式：后台启动，等待硬件节点就绪后调低 kp/kd（ROS 参数）
-    ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht "${extra_args[@]}" &
-    local launch_pid=$!
-    apply_drag_mode "${jtype}"
-    wait "${launch_pid}"
+    # 拖动模式：低刚度 kp/kd 作为 hardware_ 参数直接传入（xacro 展开进 URDF <param>）
+    local -a drag_args
+    read -r -a drag_args <<< "$(drag_mode_args "${jtype}")"
+    echo -e "${BLUE}[INFO] 拖动模式：低刚度 kp/kd 已作为启动参数传入${NC}"
+    ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht "${extra_args[@]}" "${drag_args[@]}"
   else
     ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht "${extra_args[@]}"
   fi

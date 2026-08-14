@@ -26,9 +26,6 @@ controller_interface::CallbackReturn GravityCompensationController::on_init()
   {
     joint_names_ = auto_declare<std::vector<std::string>>("joints", joint_names_);
     hold_joint_names_ = auto_declare<std::vector<std::string>>("hold_joints", hold_joint_names_);
-    use_pd_ = auto_declare<bool>("use_pd", use_pd_);
-    hold_kp_ = auto_declare<std::vector<double>>("hold_kp", hold_kp_);
-    hold_kd_ = auto_declare<std::vector<double>>("hold_kd", hold_kd_);
     max_effort_ = auto_declare<std::vector<double>>("max_effort", max_effort_);
     gravity_vector_ = auto_declare<std::vector<double>>("gravity_vector", gravity_vector_);
     urdf_param_name_ = auto_declare<std::string>("urdf_param", urdf_param_name_);
@@ -181,9 +178,9 @@ controller_interface::CallbackReturn GravityCompensationController::on_configure
 
   RCLCPP_INFO(
     get_node()->get_logger(),
-    "Configured: %zu compensated joints, %zu hold joints, use_pd=%s, "
+    "Configured: %zu compensated joints, %zu hold joints, "
     "Pinocchio model nq=%zu (gravity [%.2f, %.2f, %.2f])",
-    joint_names_.size(), hold_joint_names_.size(), use_pd_ ? "true" : "false",
+    joint_names_.size(), hold_joint_names_.size(),
     gravity_->getNumJoints(), gravity_vector_[0], gravity_vector_[1], gravity_vector_[2]);
 
   return controller_interface::CallbackReturn::SUCCESS;
@@ -192,22 +189,13 @@ controller_interface::CallbackReturn GravityCompensationController::on_configure
 controller_interface::InterfaceConfiguration
 GravityCompensationController::command_interface_configuration() const
 {
+  // ALL：claim 硬件实际暴露的全部命令接口，on_activate 中按名字挑选
+  // position/velocity/effort（均可选）。不能用 INDIVIDUAL 声明——
+  // 声明了硬件不存在的接口会在 activate 时 claim 抛异常导致激活失败
+  // （ResourceManager::claim_command_interface 对缺失接口抛 runtime_error），
+  // 而 ALL 只 claim 存在的接口，天然兼容缺失场景。
   controller_interface::InterfaceConfiguration config;
-  config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
-  for (const auto & name : joint_names_)
-  {
-    config.names.push_back(name + "/position");
-    config.names.push_back(name + "/effort");
-    if (use_pd_)
-    {
-      config.names.push_back(name + "/kp");
-      config.names.push_back(name + "/kd");
-    }
-  }
-  for (const auto & name : hold_joint_names_)
-  {
-    config.names.push_back(name + "/position");
-  }
+  config.type = controller_interface::interface_configuration_type::ALL;
   return config;
 }
 
@@ -232,7 +220,7 @@ controller_interface::CallbackReturn GravityCompensationController::on_activate(
 {
   auto claim_command = [this](
     const std::string & full_name,
-    std::vector<std::reference_wrapper<hardware_interface::LoanedCommandInterface>> & out)
+    std::vector<hardware_interface::LoanedCommandInterface *> & out)
   {
     for (auto & interface : command_interfaces_)
     {
@@ -240,10 +228,11 @@ controller_interface::CallbackReturn GravityCompensationController::on_activate(
       // get_interface_name() 只返回接口部分（"position"），无法区分关节。
       if (interface.get_name() == full_name)
       {
-        out.emplace_back(interface);
+        out.push_back(&interface);
         return true;
       }
     }
+    out.push_back(nullptr);  // 保持与 joint_names_ 对齐（缺失 = 可选接口不存在）
     return false;
   };
 
@@ -266,64 +255,89 @@ controller_interface::CallbackReturn GravityCompensationController::on_activate(
   joint_position_state_interface_.clear();
   hold_position_state_interface_.clear();
   joint_position_command_interface_.clear();
+  joint_velocity_command_interface_.clear();
   joint_effort_command_interface_.clear();
-  joint_kp_command_interface_.clear();
-  joint_kd_command_interface_.clear();
   hold_position_command_interface_.clear();
+  effort_missing_warned_ = false;
 
-  // 臂关节：position 状态 + position/effort 命令（必需）；kp/kd（可选）
+  // 臂关节：position 状态必需；position/velocity/effort 命令可选
+  // （command_interface_configuration 用 ALL，硬件缺失的接口不会出现在
+  //   command_interfaces_ 中，claim 返回 false → 对应元素为 nullptr）
   for (size_t i = 0; i < joint_names_.size(); ++i)
   {
     const std::string & base = joint_names_[i];
     const bool state_ok = claim_state(base + "/position", joint_position_state_interface_);
-    const bool pos_ok = claim_command(base + "/position", joint_position_command_interface_);
-    const bool eff_ok = claim_command(base + "/effort", joint_effort_command_interface_);
-    if (!state_ok || !pos_ok || !eff_ok)
+    if (!state_ok)
     {
       RCLCPP_ERROR(
         get_node()->get_logger(),
-        "Failed to claim interfaces for joint '%s' (state=%s position=%s effort=%s)",
-        base.c_str(), state_ok ? "ok" : "missing", pos_ok ? "ok" : "missing",
-        eff_ok ? "ok" : "missing");
+        "Failed to claim state interface for joint '%s' (position state missing)",
+        base.c_str());
       return controller_interface::CallbackReturn::ERROR;
     }
-    if (use_pd_)
+    const bool pos_ok = claim_command(base + "/position", joint_position_command_interface_);
+    const bool vel_ok = claim_command(base + "/velocity", joint_velocity_command_interface_);
+    const bool eff_ok = claim_command(base + "/effort", joint_effort_command_interface_);
+    if (!pos_ok)
     {
-      const bool kp_ok = claim_command(base + "/kp", joint_kp_command_interface_);
-      const bool kd_ok = claim_command(base + "/kd", joint_kd_command_interface_);
-      if (!kp_ok || !kd_ok)
-      {
-        RCLCPP_WARN(
-          get_node()->get_logger(),
-          "kp/kd command interfaces not available for joint '%s'; falling back to "
-          "hardware default gains", base.c_str());
-        joint_kp_command_interface_.clear();
-        joint_kd_command_interface_.clear();
-        use_pd_ = false;
-      }
+      RCLCPP_WARN(
+        get_node()->get_logger(),
+        "Joint '%s' has no position command interface; position hold disabled",
+        base.c_str());
+    }
+    if (!vel_ok)
+    {
+      RCLCPP_WARN(
+        get_node()->get_logger(),
+        "Joint '%s' has no velocity command interface; velocity command skipped",
+        base.c_str());
+    }
+    if (!eff_ok)
+    {
+      RCLCPP_WARN(
+        get_node()->get_logger(),
+        "Joint '%s' has no effort command interface; gravity torque will NOT be applied",
+        base.c_str());
     }
   }
 
-  // 保持关节（夹爪）：position 状态 + position 命令
+  // 保持关节（夹爪）：position 状态必需；position 命令可选
   for (size_t i = 0; i < hold_joint_names_.size(); ++i)
   {
     const std::string & base = hold_joint_names_[i];
     const bool state_ok = claim_state(base + "/position", hold_position_state_interface_);
-    const bool pos_ok = claim_command(base + "/position", hold_position_command_interface_);
-    if (!state_ok || !pos_ok)
+    if (!state_ok)
     {
       RCLCPP_ERROR(
         get_node()->get_logger(),
-        "Failed to claim position interfaces for hold joint '%s' (state=%s position=%s)",
-        base.c_str(), state_ok ? "ok" : "missing", pos_ok ? "ok" : "missing");
+        "Failed to claim state interface for hold joint '%s' (position state missing)",
+        base.c_str());
       return controller_interface::CallbackReturn::ERROR;
+    }
+    const bool pos_ok = claim_command(base + "/position", hold_position_command_interface_);
+    if (!pos_ok)
+    {
+      RCLCPP_WARN(
+        get_node()->get_logger(),
+        "Hold joint '%s' has no position command interface; hold disabled",
+        base.c_str());
     }
   }
 
+  const auto count_claimed = [](const auto & v)
+  {
+    return std::count_if(v.begin(), v.end(), [](const auto * p) { return p != nullptr; });
+  };
   RCLCPP_INFO(
     get_node()->get_logger(),
-    "Activated: %zu arm joints compensated, %zu hold joints kept in place",
-    joint_position_command_interface_.size(), hold_position_command_interface_.size());
+    "Activated: %zu arm joints compensated (position=%zu velocity=%zu effort=%zu), "
+    "%zu hold joints kept in place (position=%zu)",
+    joint_names_.size(),
+    count_claimed(joint_position_command_interface_),
+    count_claimed(joint_velocity_command_interface_),
+    count_claimed(joint_effort_command_interface_),
+    hold_joint_names_.size(),
+    count_claimed(hold_position_command_interface_));
 
   return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -334,10 +348,10 @@ controller_interface::CallbackReturn GravityCompensationController::on_deactivat
   joint_position_state_interface_.clear();
   hold_position_state_interface_.clear();
   joint_position_command_interface_.clear();
+  joint_velocity_command_interface_.clear();
   joint_effort_command_interface_.clear();
-  joint_kp_command_interface_.clear();
-  joint_kd_command_interface_.clear();
   hold_position_command_interface_.clear();
+  effort_missing_warned_ = false;
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
@@ -385,7 +399,8 @@ controller_interface::return_type GravityCompensationController::update(
   const Eigen::VectorXd tau = gravity_->calculateStaticTorques(q);
 
   // 4) 臂关节：effort = 重力矩（限幅）；position = 当前值（保位，防硬件回零）；
-  //    kp/kd = 软刚度（可选）
+  //    velocity = 0（速度前馈清零）。命令接口缺失时跳过写入
+  //    （effort 缺失仅警告一次，控制器继续以位置保持模式运行）。
   for (size_t i = 0; i < joint_names_.size(); ++i)
   {
     double effort = 0.0;
@@ -401,28 +416,39 @@ controller_interface::return_type GravityCompensationController::update(
       effort = std::clamp(effort, -limit, limit);
     }
 
-    std::ignore = joint_effort_command_interface_[i].get().set_value(effort);
-    std::ignore = joint_position_command_interface_[i].get().set_value(
-      state_values[joint_names_[i]]);
-
-    if (use_pd_)
+    if (joint_effort_command_interface_[i])
     {
-      if (i < joint_kp_command_interface_.size())
-      {
-        std::ignore = joint_kp_command_interface_[i].get().set_value(gainAt(hold_kp_, i));
-      }
-      if (i < joint_kd_command_interface_.size())
-      {
-        std::ignore = joint_kd_command_interface_[i].get().set_value(gainAt(hold_kd_, i));
-      }
+      std::ignore = joint_effort_command_interface_[i]->set_value(effort);
+    }
+    else if (!effort_missing_warned_)
+    {
+      RCLCPP_WARN(
+        get_node()->get_logger(),
+        "Effort command interface missing; gravity compensation torque is NOT applied "
+        "(controller runs in position-hold only mode)");
+      effort_missing_warned_ = true;
+    }
+
+    if (joint_position_command_interface_[i])
+    {
+      std::ignore = joint_position_command_interface_[i]->set_value(
+        state_values[joint_names_[i]]);
+    }
+
+    if (joint_velocity_command_interface_[i])
+    {
+      std::ignore = joint_velocity_command_interface_[i]->set_value(0.0);
     }
   }
 
-  // 5) 保持关节（夹爪）：位置跟随当前值
+  // 5) 保持关节（夹爪）：位置跟随当前值（命令接口缺失时跳过）
   for (size_t i = 0; i < hold_joint_names_.size(); ++i)
   {
-    std::ignore = hold_position_command_interface_[i].get().set_value(
-      hold_position_state_interface_[i].get().get_optional().value_or(0.0));
+    if (hold_position_command_interface_[i])
+    {
+      std::ignore = hold_position_command_interface_[i]->set_value(
+        hold_position_state_interface_[i].get().get_optional().value_or(0.0));
+    }
   }
 
   return controller_interface::return_type::OK;
