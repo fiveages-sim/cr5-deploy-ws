@@ -76,6 +76,33 @@ ros2 launch ht_gravity_compensation gravity_compensation.launch.py hardware:=rea
 
 - 单臂/单侧：`type:=single` / `type:=left` / `type:=right`（URDF 由 xacro 按 type 展开）。
 
+### 多套机械臂同机（控制盒选择）
+
+一台电脑插多套真机（每套一个 Livelybot 控制盒，各 7 路 ttyACM，VID/PID 相同）时，
+默认 `auto` 模式检测到多个控制盒会**报错退出并列出各盒路径**，需用
+`xacro_usb_select:=<路径>` 指定本启动连接哪个控制盒（路径可用
+`udevadm info -n /dev/ttyACMx` 查询，支持 `1-1.2` / `usb-0:1.2` / 完整 ID_PATH，
+子串匹配）：
+
+```bash
+# 盒 A（路径 usb-0:1.2）跑重力补偿，盒 B（路径 usb-0:4.2）跑 OCS2
+ros2 launch ht_gravity_compensation gravity_compensation.launch.py hardware:=real \
+  xacro_usb_select:=usb-0:1.2 \
+  hardware_joint_kp:="0.01, 0.01, 0.01, 0.01, 0.01, 0.01" \
+  hardware_joint_kd:="0.2, 0.2, 0.2, 0.2, 0.2, 0.2" \
+  hardware_gripper_kp:=0.001 hardware_gripper_kd:=0.01
+```
+
+选择由 `motor_cpp` 驱动层实现（不依赖 udev 规则、不修改电机 YAML）：
+- `auto`：仅允许 1 个控制盒；0 个报错退出；多个报错退出并列出各盒路径供选择。
+- 指定路径：只保留该控制盒的端口（按 USB 设备 sysname 分组过滤）。
+- 端口顺序确定性：`list_serial_ports` 由 `reverse(readdir)` 改为**名称排序**，
+  `serial_id 1,2` 恒对应控制盒通道 1/2（接线口），左右臂不再随重启乱序。
+- 串口数量不足（如 `serial_id` 超出可用端口）时报错退出，避免越界。
+
+> 另一套机械臂用 `quick_start.sh` 真机启动时同样选"控制盒"菜单（或手动加
+> `xacro_usb_select:=`），即可两套同时运行、互不抢口。
+
 ### 低刚度（拖动）模式
 
 kp/kd 是硬件接口参数，通过 `hardware_` 前缀启动参数设置（仅 `hardware:=real/real_usb`
@@ -84,7 +111,7 @@ kp/kd 是硬件接口参数，通过 `hardware_` 前缀启动参数设置（仅 
 ```bash
 ros2 launch ht_gravity_compensation gravity_compensation.launch.py hardware:=real \
   hardware_joint_kp:="0.01, 0.01, 0.01, 0.01, 0.01, 0.01" \
-  hardware_joint_kd:="0.1, 0.1, 0.1, 0.1, 0.1, 0.1" \
+  hardware_joint_kd:="0.2, 0.2, 0.2, 0.2, 0.2, 0.2" \
   hardware_gripper_kp:=0.001 hardware_gripper_kd:=0.01
 ```
 
@@ -104,7 +131,7 @@ kp/kd 经 xacro 写入 URDF hardware 段，硬件接口加载即生效（无需�
 
 | 前缀 | 生效条件 | 示例 |
 |---|---|---|
-| `xacro_xxx:=` | 总是生效 | `xacro_control_mode:=pd_control`、`xacro_config_file:=/path/PantheraDual.yaml` |
+| `xacro_xxx:=` | 总是生效 | `xacro_control_mode:=pd_control`、`xacro_config_file:=/path/PantheraDual.yaml`、`xacro_usb_select:=usb-0:1.2` |
 | `hardware_xxx:=` | 仅 `hardware:=real/real_usb` | `hardware_joint_kp:=`、`hardware_config_file:=` |
 | `robot_profile:=` | 提供 `hardware:`/`xacro:` 段（robot.local.yaml） | `robot_profile:=/path/robot.local.yaml` |
 

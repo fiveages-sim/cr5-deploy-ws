@@ -107,17 +107,18 @@ if isinstance(d, list) and idx < len(d):
 PYEOF
 }
 
-# 记录一次启动配置 (按 type/hardware/control_mode/drag 去重, 保留最近 2 条不同配置)
+# 记录一次启动配置 (按 type/hardware/control_mode/drag/usb_select 去重, 保留最近 2 条不同配置)
 record_launch() {
-  python3 - "${HIST_FILE}" "$1" "$2" "$3" "$4" <<'PYEOF'
+  python3 - "${HIST_FILE}" "$1" "$2" "$3" "$4" "$5" <<'PYEOF'
 import json, os, sys, time
-path, jtype, jhw, jcm, jdrag = sys.argv[1:6]
+path, jtype, jhw, jcm, jdrag, jusb = sys.argv[1:7]
 drag = (jdrag == "true")
 entry = {
     "type": jtype,
     "hardware": jhw,
     "control_mode": jcm,
     "drag": drag,
+    "usb_select": jusb,
     "ts": int(time.time()),
 }
 parts = ["单臂" if jtype == "single" else "双臂",
@@ -126,6 +127,8 @@ if jcm:
     parts.append(jcm)
 if drag:
     parts.append("拖动")
+if jusb and jusb != "auto":
+    parts.append(f"盒:{jusb}")
 entry["desc"] = " · ".join(parts)
 try:
     with open(path) as f:
@@ -138,7 +141,8 @@ except Exception:
 def same(e):
     return (e.get("type") == entry["type"] and e.get("hardware") == entry["hardware"]
             and e.get("control_mode", "") == entry["control_mode"]
-            and bool(e.get("drag", False)) == drag)
+            and bool(e.get("drag", False)) == drag
+            and e.get("usb_select", "auto") == jusb)
 
 data = [e for e in data if not same(e)]
 data.insert(0, entry)
@@ -307,8 +311,8 @@ drag_mode_args() {
 # 重现一条历史启动配置 (idx: 0=最近, 1=次近)
 run_history_launch() {
   local idx="$1"
-  local jtype jhw jcm jdrag
-  IFS=',' read -r jtype jhw jcm jdrag <<EOF
+  local jtype jhw jcm jdrag jusb
+  IFS=',' read -r jtype jhw jcm jdrag jusb <<EOF
 $(python3 - "${HIST_FILE}" "${idx}" <<'PYEOF'
 import json, sys
 path, idx = sys.argv[1], int(sys.argv[2])
@@ -317,7 +321,7 @@ try:
 except Exception:
     d = []
 if not isinstance(d, list) or idx >= len(d):
-    print("single,mock_components,,false")
+    print("single,mock_components,,false,auto")
     sys.exit(0)
 e = d[idx]
 print(",".join([
@@ -325,6 +329,7 @@ print(",".join([
     e.get("hardware", "mock_components"),
     e.get("control_mode", ""),
     "true" if e.get("drag") else "false",
+    e.get("usb_select", "auto"),
 ]))
 PYEOF
 )
@@ -333,24 +338,79 @@ EOF
   args+=("type:=${jtype}")
   if [ "${jhw}" = "real" ]; then
     CONTROL_MODE="${jcm}"
+    USB_SELECT="${jusb}"
     args+=("hardware:=real")
   else
     CONTROL_MODE=""
+    USB_SELECT="auto"
   fi
   local label
   label="$(hist_desc_at "${idx}")"
   _run_ocs2_demo "${label}" "${jdrag}" "${args[@]}"
 }
 
+# 列出当前检测到的控制盒（按 USB 设备路径去重）
+# 输出格式: 每行 "ID_PATH|样例口"（ID_PATH 如 pci-0000:00:14.0-usb-0:1.2，已去掉接口段）
+detect_usb_boxes() {
+  shopt -s nullglob
+  local p path box
+  declare -A seen
+  for p in /dev/ttyACM*; do
+    path="$(udevadm info -q property -n "${p}" 2>/dev/null | awk -F= '/^ID_PATH=/{print $2; exit}')"
+    [ -n "${path}" ] || continue
+    # 去掉接口段（如末尾 :1.0），只保留控制盒自身的 USB 路径（一盒一行）
+    box="$(printf '%s' "${path}" | sed -E 's/:[0-9]+\.[0-9]+$//')"
+    if [ -z "${seen[${box}]:-}" ]; then
+      seen[${box}]="1"
+      echo "${box}|${p}"
+    fi
+  done
+  shopt -u nullglob
+}
+
+# 询问选择控制盒（多套机械臂同机时）；echo "auto" 或 USB 路径，或 "back"
+ask_usb_select() {
+  local boxes=() paths=() i=1 choice
+  echo "" >&2
+  echo "请选择控制盒 (USB 设备):" >&2
+  echo " *0) 自动检测（仅 1 个控制盒时自动连接；多个时启动会报错并列出路径）" >&2
+  while IFS='|' read -r path dev; do
+    paths+=("${path}")
+    echo "  ${i}) ${path}   (样例口: ${dev})" >&2
+    i=$((i + 1))
+  done < <(detect_usb_boxes)
+  if [ "${i}" -eq 1 ]; then
+    echo "  （当前未检测到 /dev/ttyACM*，请检查 USB 连接与供电）" >&2
+  fi
+  echo "  q) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [0-$((${#paths[@]}))]（回车=默认 0）: " choice
+  if [ -z "${choice}" ]; then
+    choice="0"
+  fi
+  case "${choice}" in
+    0) echo "auto" ;;
+    q|Q) echo "back" ;;
+    *)
+      if [[ "${choice}" =~ ^[0-9]+$ ]] && [ "${choice}" -ge 1 ] && [ "${choice}" -le "${#paths[@]}" ]; then
+        echo "${paths[$((choice - 1))]}"
+      else
+        echo -e "${YELLOW}无效选项，使用自动检测${NC}" >&2
+        echo "auto"
+      fi
+      ;;
+  esac
+}
+
 # Launch ocs2 demo. Args: arm_label drag_flag type_args...
-# Uses CONTROL_MODE env if set (real only). Records the launch config to history.
+# Uses CONTROL_MODE / USB_SELECT env if set (real only). Records the launch config to history.
 _run_ocs2_demo() {
   local arm_label="$1" jdrag="$2"
   shift 2
   local -a extra_args=("$@")
   local mode_label=""
   local arg
-  local jtype="single" jhw="mock_components" jcm="${CONTROL_MODE:-}"
+  local jtype="single" jhw="mock_components" jcm="${CONTROL_MODE:-}" jusb="${USB_SELECT:-auto}"
 
   ensure_ros_env || exit 1
 
@@ -366,6 +426,12 @@ _run_ocs2_demo() {
     mode_label="，控制模式=${CONTROL_MODE}"
   fi
 
+  # 控制盒选择：非 auto 时追加 xacro_usb_select:=（motor_cpp 驱动层过滤）
+  if [ "${jusb}" != "auto" ]; then
+    extra_args+=("xacro_usb_select:=${jusb}")
+    mode_label="${mode_label}，控制盒=${jusb}"
+  fi
+
   # 解析本次启动配置并写入历史
   for arg in "${extra_args[@]}"; do
     case "${arg}" in
@@ -374,7 +440,7 @@ _run_ocs2_demo() {
       hardware:=real) jhw="real" ;;
     esac
   done
-  record_launch "${jtype}" "${jhw}" "${jcm}" "${jdrag}"
+  record_launch "${jtype}" "${jhw}" "${jcm}" "${jdrag}" "${jusb}"
 
   echo -e "${GREEN}启动${arm_label}${mode_label}...${NC}"
   if [ "${jdrag}" = "true" ]; then
@@ -607,7 +673,18 @@ if [ "${top_choice}" = "$((HIST_COUNT + 2))" ]; then
             if [ -z "${CONTROL_MODE}" ]; then
               echo "返回"
             else
-              _run_ocs2_demo "${arm_label}真机" "${drag_flag}" "${type_arg}" "hardware:=real"
+              # 控制盒选择：多套机械臂同机时指定本启动连接哪个控制盒
+              USB_SELECT="$(ask_usb_select)"
+              if [ "${USB_SELECT}" = "back" ]; then
+                echo "返回"
+              else
+                if [ "${USB_SELECT}" = "auto" ]; then
+                  echo -e "${BLUE}[INFO] 控制盒：自动检测${NC}"
+                else
+                  echo -e "${BLUE}[INFO] 控制盒：${USB_SELECT}${NC}"
+                fi
+                _run_ocs2_demo "${arm_label}真机" "${drag_flag}" "${type_arg}" "hardware:=real"
+              fi
             fi
             ;;
           0)
