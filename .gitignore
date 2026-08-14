@@ -12,6 +12,7 @@ __pycache__/
 *.so
 
 # IDE files
+.cursor/
 .vscode/
 .idea/
 *.swp

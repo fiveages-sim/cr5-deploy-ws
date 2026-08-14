@@ -274,7 +274,7 @@ Run modes: real hardware / real hardware headless / simulation / simulation head
 **Lift axis (Lift2S only)**
 
 - `hybrid` (default): `sendLiftHybrid`, tracks pos+vel, with HI gravity/friction feedforward.
-- `soft_p` / `position`: Soft-P `setHeight`, position tracking only.
+- `soft_p` / `position`: follow position directly; lift/chassis sent separately; hold via `soft_p_kp`, no gravity FF.
 
 ```bash
 ./quick_start.sh

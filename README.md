@@ -274,7 +274,7 @@ ros2 launch robot_common_launch manipulator.launch.py robot:=arx_lift2s
 **升降（仅 Lift2S）**
 
 - `hybrid`（默认）：`sendLiftHybrid`，跟踪 pos+vel，HI 重力/摩擦前馈。
-- `soft_p` / `position`：Soft-P `setHeight`，仅跟踪 position。
+- `soft_p` / `position`：仅跟踪 position（直跟）；升降与底盘分开发；持高靠 `soft_p_kp`，不加重力前馈。
 
 ```bash
 ./quick_start.sh

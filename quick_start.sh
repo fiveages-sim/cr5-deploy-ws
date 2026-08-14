@@ -155,6 +155,29 @@ ensure_ros_env() {
   return 1
 }
 
+# Zenoh 同域下残留 robot_state_publisher / ros2_control 会让 RViz 显示成上一台机型
+warn_stale_ros_nodes() {
+  local stale
+  stale="$(ps -eo args= 2>/dev/null | grep -E 'ros2_control_node|robot_state_publisher|rviz2' | grep -v grep || true)"
+  if [ -n "${stale}" ]; then
+    echo -e "${YELLOW}[WARN] 检测到仍在运行的控制/可视化进程（同 ROS_DOMAIN / Zenoh 下会串 /robot_description）：${NC}"
+    echo "${stale}" | sed 's/^/  /' >&2
+    echo -e "${YELLOW}      若 RViz 机型不对：先 Ctrl+C 停掉旧 launch，或 kill 上述进程后再启动${NC}"
+  fi
+}
+
+_print_launch_cmd() {
+  echo -e "${BLUE}[CMD] ros2 launch $*${NC}"
+}
+
+# Extra ros2 launch args that may contain spaces (each array element = one CLI token).
+# Set by do_launch_with_body_mode for Lift split mounts; cleared at start of do_launch.
+EXTRA_LAUNCH_ARGS=()
+
+_clear_extra_launch_args() {
+  EXTRA_LAUNCH_ARGS=()
+}
+
 # Zenoh router must be up BEFORE ros2 launch. Starting it inside the same launch
 # races robot_state_publisher vs controller_manager on /robot_description
 # (CM stays on "Waiting for data on 'robot_description' topic").
@@ -214,10 +237,10 @@ print_can_hint() {
   echo -e "${BLUE}真机 CAN 提示：${NC}"
   echo -e "${BLUE}  - 左臂 can1 / 右臂 can3（ArxX5Hardware：仅 full_control / MIT MIX）${NC}"
   echo -e "${BLUE}  - 升降 can5（ArxLiftHardware：hybrid | soft_p/position）${NC}"
-  echo -e "${BLUE}  - 升降 hybrid：HI 重力+摩擦前馈，忽略上层 effort${NC}"
+  echo -e "${BLUE}  - 升降 hybrid：pos+vel + 重力/摩擦；soft_p：position + 常值重力（无摩擦）；底盘均 sendChassisOnly${NC}"
   echo -e "${BLUE}  - 升降热调：ros2 param set /controller_manager arx_lift.hybrid_kp 5.0${NC}"
   echo -e "${BLUE}  - 升降热调：ros2 param set /controller_manager arx_lift.hybrid_kd 2.0${NC}"
-  echo -e "${BLUE}  - OCS2：分体 task_arm.info / 全身 fixed_base.info${NC}"
+  echo -e "${BLUE}  - OCS2：分体 robot_name→分体规划包 / 全身本包 task.info${NC}"
   echo -e "${BLUE}  - 勿与官方 X5Controller / lift_controller 同总线并行${NC}"
   echo -e "${BLUE}  - 检查：ip link show can1 can3 can5${NC}"
 }
@@ -337,11 +360,56 @@ _clear_launch_history_vars() {
   unset LAST_COUNT LAST_DESC
   for i in 0 1 2; do
     unset "LAST_DESC_${i}" "LAST_LAUNCH_FILE_${i}" "LAST_BASE_ARGS_${i}" \
+      "LAST_EXTRA_ARGS_${i}" \
       "LAST_MODE_CHOICE_${i}" "LAST_ASK_ARM_SIDE_${i}" "LAST_ASK_LIFT_MODE_${i}" \
       "LAST_CAN_ARG_${i}" "LAST_LIFT_MODE_ARG_${i}"
   done
   unset LAST_LAUNCH_FILE LAST_BASE_ARGS LAST_MODE_CHOICE \
     LAST_ASK_ARM_SIDE LAST_ASK_LIFT_MODE LAST_CAN_ARG LAST_LIFT_MODE_ARG
+}
+
+# Encode/decode EXTRA_LAUNCH_ARGS for launch_last.conf (RS = ASCII unit separator).
+_encode_extra_launch_args() {
+  local out="" a
+  for a in "$@"; do
+    out+="${a}"$'\x1f'
+  done
+  printf '%s' "${out}"
+}
+
+_decode_extra_launch_args_to_global() {
+  local encoded="${1:-}"
+  EXTRA_LAUNCH_ARGS=()
+  if [ -z "${encoded}" ]; then
+    return 0
+  fi
+  local IFS=$'\x1f'
+  # shellcheck disable=SC2206
+  EXTRA_LAUNCH_ARGS=(${encoded})
+  # Drop empty trailing field from final RS
+  if [ "${#EXTRA_LAUNCH_ARGS[@]}" -gt 0 ] && [ -z "${EXTRA_LAUNCH_ARGS[-1]}" ]; then
+    unset 'EXTRA_LAUNCH_ARGS[-1]'
+  fi
+}
+
+# Strip legacy broken Lift xyz from base_args into EXTRA_LAUNCH_ARGS.
+_migrate_legacy_lift_xyz_base_args() {
+  local base="${1:-}"
+  if [[ ! "${base}" =~ xacro_left_xyz ]]; then
+    printf '%s' "${base}"
+    return 0
+  fi
+  # Always use canonical mounts; ignore mangled quoting in old history.
+  EXTRA_LAUNCH_ARGS=(
+    "xacro_left_xyz:=0.208 0.25000 0.092"
+    "xacro_right_xyz:=0.208 -0.25000 0.092"
+  )
+  base="$(printf '%s' "${base}" | sed -E \
+    -e "s/[[:space:]]*xacro_left_xyz:=('[^']*'|\"[^\"]*\"|[^[:space:]]+)//g" \
+    -e "s/[[:space:]]*xacro_right_xyz:=('[^']*'|\"[^\"]*\"|[^[:space:]]+)//g")"
+  # Collapse leftover spaces
+  base="$(printf '%s' "${base}" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  printf '%s' "${base}"
 }
 
 _load_launch_last() {
@@ -379,7 +447,7 @@ _load_launch_last() {
 _write_launch_history() {
   local f="${QS_LAST_LAUNCH_FILE}"
   local i n="${LAST_COUNT:-0}"
-  local desc launch_file base_args mode_choice ask_arm ask_lift can_arg lift_arg
+  local desc launch_file base_args mode_choice ask_arm ask_lift can_arg lift_arg extra_args
   mkdir -p "$(dirname "${f}")"
   {
     printf 'LAST_COUNT=%q\n' "${n}"
@@ -395,6 +463,8 @@ _write_launch_history() {
       printf 'LAST_DESC_%d=%q\n' "${i}" "${!desc:-}"
       printf 'LAST_LAUNCH_FILE_%d=%q\n' "${i}" "${!launch_file:-}"
       printf 'LAST_BASE_ARGS_%d=%q\n' "${i}" "${!base_args:-}"
+      extra_args="LAST_EXTRA_ARGS_${i}"
+      printf 'LAST_EXTRA_ARGS_%d=%q\n' "${i}" "${!extra_args:-}"
       printf 'LAST_MODE_CHOICE_%d=%q\n' "${i}" "${!mode_choice:-}"
       printf 'LAST_ASK_ARM_SIDE_%d=%q\n' "${i}" "${!ask_arm:-0}"
       printf 'LAST_ASK_LIFT_MODE_%d=%q\n' "${i}" "${!ask_lift:-0}"
@@ -407,6 +477,7 @@ _write_launch_history() {
 _save_launch_last() {
   # $1=desc $2=launch_file $3=base_args $4=mode_choice
   # $5=ask_arm_side $6=ask_lift_mode $7=can_arg $8=lift_motor_mode_arg
+  # Uses global EXTRA_LAUNCH_ARGS (or caller-set) for spaced xacro args.
   local new_desc="${1:-}"
   local new_launch="${2:-}"
   local new_base="${3:-}"
@@ -415,22 +486,25 @@ _save_launch_last() {
   local new_ask_lift="${6:-0}"
   local new_can="${7:-}"
   local new_lift="${8:-}"
-  local new_fp i j n
-  local d l b m aa al c lm
-  local -a descs launches bases modes ask_arms ask_lifts cans lifts
-  local -a keep_d keep_l keep_b keep_m keep_aa keep_al keep_c keep_lm
+  local new_extra new_fp i j n
+  local d l b e m aa al c lm
+  local -a descs launches bases extras modes ask_arms ask_lifts cans lifts
+  local -a keep_d keep_l keep_b keep_e keep_m keep_aa keep_al keep_c keep_lm
 
-  new_fp="$(_launch_fingerprint "${new_launch}" "${new_base}" "${new_mode}" "${new_can}" "${new_lift}")"
+  new_extra="$(_encode_extra_launch_args "${EXTRA_LAUNCH_ARGS[@]}")"
+  new_fp="$(_launch_fingerprint "${new_launch}" "${new_base}"$'\t'"${new_extra}" "${new_mode}" "${new_can}" "${new_lift}")"
 
   _load_launch_last
   n="${LAST_COUNT:-0}"
   for ((i = 0; i < n; i++)); do
     d="LAST_DESC_${i}"; l="LAST_LAUNCH_FILE_${i}"; b="LAST_BASE_ARGS_${i}"
+    e="LAST_EXTRA_ARGS_${i}"
     m="LAST_MODE_CHOICE_${i}"; aa="LAST_ASK_ARM_SIDE_${i}"; al="LAST_ASK_LIFT_MODE_${i}"
     c="LAST_CAN_ARG_${i}"; lm="LAST_LIFT_MODE_ARG_${i}"
     descs+=("${!d:-}")
     launches+=("${!l:-}")
     bases+=("${!b:-}")
+    extras+=("${!e:-}")
     modes+=("${!m:-}")
     ask_arms+=("${!aa:-0}")
     ask_lifts+=("${!al:-0}")
@@ -439,12 +513,13 @@ _save_launch_last() {
   done
 
   for ((i = 0; i < n; i++)); do
-    if [ "$(_launch_fingerprint "${launches[$i]}" "${bases[$i]}" "${modes[$i]}" "${cans[$i]}" "${lifts[$i]}")" = "${new_fp}" ]; then
+    if [ "$(_launch_fingerprint "${launches[$i]}" "${bases[$i]}"$'\t'"${extras[$i]}" "${modes[$i]}" "${cans[$i]}" "${lifts[$i]}")" = "${new_fp}" ]; then
       continue
     fi
     keep_d+=("${descs[$i]}")
     keep_l+=("${launches[$i]}")
     keep_b+=("${bases[$i]}")
+    keep_e+=("${extras[$i]}")
     keep_m+=("${modes[$i]}")
     keep_aa+=("${ask_arms[$i]}")
     keep_al+=("${ask_lifts[$i]}")
@@ -456,6 +531,7 @@ _save_launch_last() {
   LAST_DESC_0="${new_desc}"
   LAST_LAUNCH_FILE_0="${new_launch}"
   LAST_BASE_ARGS_0="${new_base}"
+  LAST_EXTRA_ARGS_0="${new_extra}"
   LAST_MODE_CHOICE_0="${new_mode}"
   LAST_ASK_ARM_SIDE_0="${new_ask_arm}"
   LAST_ASK_LIFT_MODE_0="${new_ask_lift}"
@@ -472,6 +548,7 @@ _save_launch_last() {
     printf -v "LAST_DESC_${i}" '%s' "${keep_d[$j]}"
     printf -v "LAST_LAUNCH_FILE_${i}" '%s' "${keep_l[$j]}"
     printf -v "LAST_BASE_ARGS_${i}" '%s' "${keep_b[$j]}"
+    printf -v "LAST_EXTRA_ARGS_${i}" '%s' "${keep_e[$j]}"
     printf -v "LAST_MODE_CHOICE_${i}" '%s' "${keep_m[$j]}"
     printf -v "LAST_ASK_ARM_SIDE_${i}" '%s' "${keep_aa[$j]}"
     printf -v "LAST_ASK_LIFT_MODE_${i}" '%s' "${keep_al[$j]}"
@@ -500,7 +577,7 @@ _mode_choice_label() {
 _do_last_launch() {
   local idx="${1:-0}"
   local desc launch_file base_args mode_choice ask_arm ask_lift can_arg lift_arg
-  local v_desc v_launch v_base v_mode v_ask_arm v_ask_lift v_can v_lift
+  local v_desc v_launch v_base v_extra v_mode v_ask_arm v_ask_lift v_can v_lift
   _load_launch_last
   if ! [[ "${idx}" =~ ^[0-9]+$ ]] || [ "${idx}" -ge "${LAST_COUNT:-0}" ]; then
     echo -e "${YELLOW}[WARN] 无有效启动记录 #$((idx + 1))（${QS_LAST_LAUNCH_FILE}）${NC}"
@@ -509,6 +586,7 @@ _do_last_launch() {
   v_desc="LAST_DESC_${idx}"
   v_launch="LAST_LAUNCH_FILE_${idx}"
   v_base="LAST_BASE_ARGS_${idx}"
+  v_extra="LAST_EXTRA_ARGS_${idx}"
   v_mode="LAST_MODE_CHOICE_${idx}"
   v_ask_arm="LAST_ASK_ARM_SIDE_${idx}"
   v_ask_lift="LAST_ASK_LIFT_MODE_${idx}"
@@ -525,6 +603,11 @@ _do_last_launch() {
   if [ -z "${launch_file}" ] || [ -z "${mode_choice}" ]; then
     echo -e "${YELLOW}[WARN] 启动记录 #$((idx + 1)) 不完整（${QS_LAST_LAUNCH_FILE}）${NC}"
     return 1
+  fi
+  # Restore extras; migrate legacy Lift xyz embedded in base_args.
+  _decode_extra_launch_args_to_global "${!v_extra:-}"
+  if [ "${#EXTRA_LAUNCH_ARGS[@]}" -eq 0 ]; then
+    base_args="$(_migrate_legacy_lift_xyz_base_args "${base_args}")"
   fi
   echo -e "${GREEN}使用最近启动 #$((idx + 1))：${desc}${NC}"
   do_launch "${desc}" "${launch_file}" "${base_args}" \
@@ -654,6 +737,8 @@ do_launch() {
   local mode_label=""
   local save_desc=""
   local side_choice can_if lm_choice lift_motor_mode
+  # Snapshot extras for this launch (caller may set EXTRA_LAUNCH_ARGS before invoke).
+  local -a extra_args=("${EXTRA_LAUNCH_ARGS[@]}")
 
   while true; do
     mode_choice="${preset_mode}"
@@ -763,6 +848,7 @@ do_launch() {
       if [[ "${description}" != *"+"* ]]; then
         save_desc="${description} + $(_mode_choice_label "${mode_choice}")${mode_label}"
       fi
+      EXTRA_LAUNCH_ARGS=("${extra_args[@]}")
       _save_launch_last "${save_desc}" "${launch_file}" "${base_args}" \
         "${mode_choice}" "${ask_arm_side}" "${ask_lift_mode}" \
         "${can_arg}" "${lift_motor_mode_arg}"
@@ -774,58 +860,79 @@ do_launch() {
       echo -e "${GREEN}启动${description}（真机${mode_label}）...${NC}"
       ensure_ros_env || return 1
       ensure_zenoh_router || return 1
+      warn_stale_ros_nodes
       print_can_hint
       # shellcheck disable=SC2086
-      ros2 launch ${launch_file} ${base_args} hardware:=real ${can_arg} ${lift_motor_mode_arg}
+      _print_launch_cmd ${launch_file} ${base_args} "${extra_args[@]}" hardware:=real ${can_arg} ${lift_motor_mode_arg}
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} "${extra_args[@]}" hardware:=real ${can_arg} ${lift_motor_mode_arg}
       return $?
       ;;
     2)
       echo -e "${GREEN}启动${description}（真机 headless${mode_label}）...${NC}"
       ensure_ros_env || return 1
       ensure_zenoh_router || return 1
+      warn_stale_ros_nodes
       print_can_hint
       # shellcheck disable=SC2086
-      ros2 launch ${launch_file} ${base_args} hardware:=real launch_mode:=control_only ${can_arg} ${lift_motor_mode_arg}
+      _print_launch_cmd ${launch_file} ${base_args} "${extra_args[@]}" hardware:=real launch_mode:=control_only ${can_arg} ${lift_motor_mode_arg}
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} "${extra_args[@]}" hardware:=real launch_mode:=control_only ${can_arg} ${lift_motor_mode_arg}
       return $?
       ;;
     3)
       echo -e "${GREEN}启动${description}（仿真）...${NC}"
       ensure_ros_env || return 1
       ensure_zenoh_router || return 1
+      warn_stale_ros_nodes
       # shellcheck disable=SC2086
-      ros2 launch ${launch_file} ${base_args} hardware:=mock_components
+      _print_launch_cmd ${launch_file} ${base_args} "${extra_args[@]}" hardware:=mock_components
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} "${extra_args[@]}" hardware:=mock_components
       return $?
       ;;
     4)
       echo -e "${GREEN}启动${description}（仿真 headless）...${NC}"
       ensure_ros_env || return 1
       ensure_zenoh_router || return 1
+      warn_stale_ros_nodes
       # shellcheck disable=SC2086
-      ros2 launch ${launch_file} ${base_args} hardware:=mock_components launch_mode:=control_only
+      _print_launch_cmd ${launch_file} ${base_args} "${extra_args[@]}" hardware:=mock_components launch_mode:=control_only
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} "${extra_args[@]}" hardware:=mock_components launch_mode:=control_only
       return $?
       ;;
     5)
       echo -e "${GREEN}启动${description}（Isaac）...${NC}"
       ensure_ros_env || return 1
       ensure_zenoh_router || return 1
+      warn_stale_ros_nodes
       # shellcheck disable=SC2086
-      ros2 launch ${launch_file} ${base_args} hardware:=isaac
+      _print_launch_cmd ${launch_file} ${base_args} "${extra_args[@]}" hardware:=isaac
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} "${extra_args[@]}" hardware:=isaac
       return $?
       ;;
     6)
       echo -e "${GREEN}启动${description}（Isaac headless）...${NC}"
       ensure_ros_env || return 1
       ensure_zenoh_router || return 1
+      warn_stale_ros_nodes
       # shellcheck disable=SC2086
-      ros2 launch ${launch_file} ${base_args} hardware:=isaac launch_mode:=control_only
+      _print_launch_cmd ${launch_file} ${base_args} "${extra_args[@]}" hardware:=isaac launch_mode:=control_only
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} "${extra_args[@]}" hardware:=isaac launch_mode:=control_only
       return $?
       ;;
     7)
       echo -e "${GREEN}启动${description}（仅可视化）...${NC}"
       ensure_ros_env || return 1
       ensure_zenoh_router || return 1
+      warn_stale_ros_nodes
       # shellcheck disable=SC2086
-      ros2 launch ${launch_file} ${base_args} launch_mode:=rviz_only
+      _print_launch_cmd ${launch_file} ${base_args} "${extra_args[@]}" launch_mode:=rviz_only
+      # shellcheck disable=SC2086
+      ros2 launch ${launch_file} ${base_args} "${extra_args[@]}" launch_mode:=rviz_only
       return $?
       ;;
   esac
@@ -986,6 +1093,7 @@ full_robot_menu() {
 # 单臂：X5 支持真机；R5 仅仿真/Isaac/可视化
 do_launch_single_arm() {
   local arm_choice rc
+  EXTRA_LAUNCH_ARGS=()
   while true; do
     arm_choice="$(single_arm_menu)"
     case "${arm_choice}" in
@@ -1017,6 +1125,7 @@ do_launch_single_arm() {
 # 双臂 ACone：X5 支持真机；R5 仅仿真/Isaac/可视化
 do_launch_dual_arm() {
   local arm_choice rc
+  EXTRA_LAUNCH_ARGS=()
   while true; do
     arm_choice="$(dual_arm_menu)"
     case "${arm_choice}" in
@@ -1048,6 +1157,7 @@ do_launch_dual_arm() {
 # 整机：Lift2S 支持真机；Lift / X7S 仅仿真/Isaac/可视化
 do_launch_full_robot() {
   local robot_choice rc
+  EXTRA_LAUNCH_ARGS=()
   while true; do
     robot_choice="$(full_robot_menu)"
     case "${robot_choice}" in
@@ -1111,13 +1221,26 @@ do_launch_with_body_mode() {
       1)
         launch_file="ocs2_arm_controller split_body.launch.py"
         mode_label="分体控制"
-        # Lift: robot.xacro 默认 dual，分体规划无需额外参数
+        EXTRA_LAUNCH_ARGS=()
+        # Lift 分体规划用 arx_acone，须覆盖为经典 Lift 臂座（≠ acone 默认）。
+        # 带空格的 xyz 必须用数组元素传入，不能塞进未加引号展开的 base_args。
+        if [[ "${base_args}" =~ (^|[[:space:]])robot:=arx_lift([[:space:]]|$) ]]; then
+          EXTRA_LAUNCH_ARGS=(
+            "xacro_left_xyz:=0.208 0.25000 0.092"
+            "xacro_right_xyz:=0.208 -0.25000 0.092"
+          )
+        fi
+        # X7S 分体规划：同包 robot.xacro topology:=dual（根 body）；硬件仍 full。
+        if [[ "${base_args}" =~ (^|[[:space:]])robot:=arx_x7s([[:space:]]|$) ]]; then
+          base_args="${base_args} xacro_topology:=dual"
+        fi
         ;;
       2)
         launch_file="ocs2_arm_controller full_body.launch.py"
         mode_label="全身控制"
-        # Lift 全身规划须显式 full（robot.xacro 默认已改为 dual 以修分体 marker）
-        if [[ "${base_args}" == *"robot:=arx_lift"* ]]; then
+        EXTRA_LAUNCH_ARGS=()
+        # X7S 全身规划须 full（默认即是）；显式写出以免残留 dual。
+        if [[ "${base_args}" =~ (^|[[:space:]])robot:=arx_x7s([[:space:]]|$) ]]; then
           base_args="${base_args} xacro_topology:=full"
         fi
         ;;
