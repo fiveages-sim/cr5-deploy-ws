@@ -2,9 +2,9 @@
 
 ![ARX Lift2S](.images/arx_lift2s.jpg)
 
-This repository deploys a ROS 2 workspace for **ARX Lift2S**, a control stack based on the OCS2 MPC framework.
+This repository deploys a ROS 2 workspace for **ARX Lift2S**, based on the OCS2 MPC control framework.
 
-ARX product descriptions live in the submodule [`src/robot-descriptions-arx`](src/robot-descriptions-arx) (X5/R5, ACone, Lift, Lift2S, X7S, …). `quick_start` can also launch those models for co-debug; this workspace’s product focus is Lift2S.
+ARX (Fangzhou) model descriptions live in the submodule [`src/robot-descriptions-arx`](src/robot-descriptions-arx) (X5/R5, ACone, Lift, Lift2S, X7S, …). `quick_start` can also launch those models for co-debug; this workspace’s product focus is Lift2S.
 
 ### Prerequisites
 - Git SSH keys configured with access to the relevant private repositories
@@ -12,20 +12,19 @@ ARX product descriptions live in the submodule [`src/robot-descriptions-arx`](sr
 - ROS 2 Jazzy (Ubuntu 24.04)
 
 ## 1. Repository initialization
-
 ### Clone the repository to ~/lift2s-ws
 ```bash
   # 1) Change to the home directory
   cd ~
-
+  
   # 2) Clone into lift2s-ws (directory name can be changed as needed)
   git clone git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws
-
+  
   # 3) Enter the repository directory
   cd ~/lift2s-ws
 ```
 
-For a maintainer release zip: unzip, run `./release.sh --install`, then `./quick_start.sh` (description source stays in the workspace; controllers / HI come from deb).
+For field use with a maintainer release zip: unzip, run `./release.sh --install`, then `./quick_start.sh` (description source stays in the workspace; controllers / HI come from deb).
 
 ### Initialize and update submodules
 
@@ -73,7 +72,6 @@ Deployment hosts should use RMW Zenoh to avoid DDS message interference from oth
 * When launching via `launch` files in `robot-descriptions-common`, a Zenoh router is started automatically
 
 ## 3. Build and simulation verification
-
 ### 3.1 Install dependencies
 * Rosdep dependency installation
 ```bash
@@ -131,7 +129,6 @@ colcon build --packages-up-to \
 </details>
 
 ### 3.3 Simulation verification
-
 #### 3.3.1 Model visualization
 ```bash
 source ~/lift2s-ws/install/setup.bash
@@ -192,8 +189,8 @@ ros2 launch ocs2_arm_controller full_body.launch.py robot:=arx_lift2s hardware:=
 
 ## 4. Submodule notes
 
-- **arms_ros2_control** — Generic ROS 2 control implementation for manipulators
-- **arx-ros2-control** — ARX hardware driver (CAN: arms + Lift2S lift/chassis)
-- **ocs2_ros2** — ROS 2 port of OCS2 (MPC control framework)
-- **robot-descriptions-arx** — Full ARX product descriptions (this workspace primarily uses Lift2S)
-- **robot-descriptions-common** — Shared robot components (grippers, cameras, launch, etc.)
+- **arms_ros2_control** - Generic ROS 2 control for manipulators
+- **arx-ros2-control** - ARX hardware driver (CAN: arms + Lift2S lift/chassis)
+- **ocs2_ros2** - ROS 2 port of OCS2 (MPC control framework)
+- **robot-descriptions-arx** - Full ARX product descriptions (this workspace primarily uses Lift2S)
+- **robot-descriptions-common** - Shared robot components (grippers, cameras, launch, etc.)
