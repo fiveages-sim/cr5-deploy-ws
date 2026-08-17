@@ -18,3 +18,6 @@
 	path = src/ht-ros2-control
 	url = git@github.com:fiveages-sim/ht-ros2-control.git
 	branch = main
+[submodule "src/drag_teleop_controller"]
+	path = src/drag_teleop_controller
+	url = git@github.com:fiveages-sim/drag_teleop_controller.git
