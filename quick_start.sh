@@ -121,7 +121,8 @@ entry = {
     "usb_select": jusb,
     "ts": int(time.time()),
 }
-parts = ["单臂" if jtype == "single" else "双臂",
+type_label = {"single": "单臂", "dual": "双臂", "left": "左臂", "right": "右臂"}.get(jtype, jtype)
+parts = [type_label,
          "真机" if jhw == "real" else "仿真"]
 if jcm:
     parts.append(jcm)
@@ -197,23 +198,31 @@ build_menu() {
 launch_menu() {
   echo "" >&2
   echo "请选择启动项:" >&2
-  echo "  1) 单臂" >&2
-  echo "  2) 双臂" >&2
-  echo "  3) 手柄遥操作" >&2
+  echo " *1) 双臂 (dual)" >&2
+  echo "  2) 单臂 (single)" >&2
+  echo "  3) 左臂 (left)" >&2
+  echo "  4) 右臂 (right)" >&2
+  echo "  5) 手柄遥操作" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-3]: " choice
+  read -r -p "请输入选项 [0-5]（回车=默认 1）: " choice
+  if [ -z "${choice}" ]; then
+    choice="1"
+  fi
   echo "${choice}"
 }
 
 launch_mode_menu() {
   echo "" >&2
   echo "请选择运行模式:" >&2
-  echo "  1) 仿真" >&2
+  echo " *1) 仿真" >&2
   echo "  2) 真机" >&2
   echo "  0) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-2]: " choice
+  read -r -p "请输入选项 [0-2]（回车=默认 1）: " choice
+  if [ -z "${choice}" ]; then
+    choice="1"
+  fi
   echo "${choice}"
 }
 
@@ -437,6 +446,8 @@ _run_ocs2_demo() {
     case "${arg}" in
       type:=single) jtype="single" ;;
       type:=dual) jtype="dual" ;;
+      type:=left) jtype="left" ;;
+      type:=right) jtype="right" ;;
       hardware:=real) jhw="real" ;;
     esac
   done
@@ -640,15 +651,16 @@ fi
 if [ "${top_choice}" = "$((HIST_COUNT + 2))" ]; then
     launch_choice="$(launch_menu)"
     case "${launch_choice}" in
-      1|2)
-        arm_label="单臂"
-        # panthera_ht xacro 用 type=single 表示单臂；若不传 type，robot_common_launch
-        # 会把 OCS2 planning URDF 默认成 dual（14 DOF），与 6 关节控制器不匹配。
-        type_arg="type:=single"
-        if [ "${launch_choice}" = "2" ]; then
-          arm_label="双臂"
-          type_arg="type:=dual"
-        fi
+      1|2|3|4)
+        # panthera_ht xacro 的 type: dual=双臂 / single=单臂 / left=左臂 /
+        # right=右臂；若不传 type，robot_common_launch 会把 OCS2 planning URDF
+        # 默认成 dual（14 DOF），与单臂 6 关节控制器不匹配。
+        case "${launch_choice}" in
+          1) arm_label="双臂"; type_arg="type:=dual" ;;
+          2) arm_label="单臂"; type_arg="type:=single" ;;
+          3) arm_label="左臂"; type_arg="type:=left" ;;
+          4) arm_label="右臂"; type_arg="type:=right" ;;
+        esac
 
         mode_choice="$(launch_mode_menu)"
 
@@ -696,7 +708,7 @@ if [ "${top_choice}" = "$((HIST_COUNT + 2))" ]; then
             ;;
         esac
         ;;
-      3)
+      5)
         do_launch_joystick_teleop
         ;;
       0)
