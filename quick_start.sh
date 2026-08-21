@@ -12,7 +12,36 @@ WS_DIR="${SCRIPT_DIR}"
 
 . "${SCRIPT_DIR}/scripts/lib_common.sh"
 
-# 核心包由 deb 提供时，src 下无 arms_ros2_control / ocs2_ros2 等
+# ===================== 常量 / 默认参数（集中在此，方便查看与修改） =====================
+
+# 启动历史记忆文件（与 teleop_start.sh 共用；条目用 kind 字段区分）
+HIST_FILE="${HOME}/.config/panthera_ht/quick_start_history.json"
+# 历史保留条数（最近 N 条不同配置）
+HIST_MAX=2
+
+# OCS2 启动包 / launch 文件 / 机器人名
+OCS2_LAUNCH_PKG="ocs2_arm_controller"
+OCS2_LAUNCH_FILE="demo.launch.py"
+ROBOT_NAME="panthera_ht"
+
+# 拖动模式（低刚度）kp/kd 默认值 —— 关节 kp/kd 为数组（每臂 6 值，
+# dual 时 xacro 自动拼接为 12 值，勿传 12 值）
+DRAG_JOINT_KP=(0.01 0.01 0.01 0.01 0.01 0.01)
+DRAG_JOINT_KD=(0.1 0.1 0.1 0.1 0.1 0.1)
+DRAG_GRIPPER_KP=0.001
+DRAG_GRIPPER_KD=0.01
+
+# 真机控制模式映射（菜单选项 → xacro_control_mode）
+# 1) full_control   — OCS2 MIX（位置+速度+力矩+kp/kd）
+# 2) pd_control     — 位置+力矩，kp/kd
+# 3) position_velocity — 位置+速度+最大力矩
+declare -A CONTROL_MODES=(
+  [1]="full_control"
+  [2]="pd_control"
+  [3]="position_velocity"
+)
+
+# ===================== 核心包由 deb 提供时，src 下无 arms_ros2_control / ocs2_ros2 等 =====================
 # HT 工作空间默认 arms-full（含 ht_ros2_control）
 core_deb_mode() {
   if dpkg-query -W -f='${Status}' ros-jazzy-arms-ros2-control-full 2>/dev/null | grep -q "install ok installed"; then
@@ -78,7 +107,10 @@ ensure_ros_env() {
 }
 
 # ===================== 启动历史记忆 =====================
-HIST_FILE="${HOME}/.config/panthera_ht/quick_start_history.json"
+# 历史文件与 teleop_start.sh 共用；条目用 kind 字段区分：
+#   quick_start 条目: 无 kind 或 kind=="quick_start"
+#   teleop 条目:      kind=="teleop"
+# 各脚本只统计/去重/重现自己 kind 的条目，互不干扰。
 
 # 历史条数 (0/1/2)
 history_count() {
@@ -89,7 +121,10 @@ try:
     d = json.load(open(sys.argv[1]))
 except Exception:
     d = []
-print(len(d) if isinstance(d, list) else 0)
+if not isinstance(d, list):
+    d = []
+d = [e for e in d if e.get("kind", "quick_start") == "quick_start"]
+print(len(d))
 PYEOF
 }
 
@@ -102,18 +137,24 @@ try:
     d = json.load(open(path))
 except Exception:
     d = []
-if isinstance(d, list) and idx < len(d):
+if not isinstance(d, list):
+    d = []
+d = [e for e in d if e.get("kind", "quick_start") == "quick_start"]
+if idx < len(d):
     print(d[idx].get("desc", ""))
 PYEOF
 }
 
-# 记录一次启动配置 (按 type/hardware/control_mode/drag/usb_select 去重, 保留最近 2 条不同配置)
+# 记录一次启动配置 (按 type/hardware/control_mode/drag/usb_select 去重,
+# 保留最近 HIST_MAX 条不同配置；其他 kind 条目原样保留)
 record_launch() {
-  python3 - "${HIST_FILE}" "$1" "$2" "$3" "$4" "$5" <<'PYEOF'
+  python3 - "${HIST_FILE}" "$1" "$2" "$3" "$4" "$5" "${HIST_MAX}" <<'PYEOF'
 import json, os, sys, time
-path, jtype, jhw, jcm, jdrag, jusb = sys.argv[1:7]
+path, jtype, jhw, jcm, jdrag, jusb, hist_max = sys.argv[1:8]
+hist_max = int(hist_max)
 drag = (jdrag == "true")
 entry = {
+    "kind": "quick_start",
     "type": jtype,
     "hardware": jhw,
     "control_mode": jcm,
@@ -145,9 +186,13 @@ def same(e):
             and bool(e.get("drag", False)) == drag
             and e.get("usb_select", "auto") == jusb)
 
-data = [e for e in data if not same(e)]
-data.insert(0, entry)
-data = data[:2]
+# 分离本 kind 与其他 kind 条目；只对本 kind 去重并限条数
+qs = [e for e in data if e.get("kind", "quick_start") == "quick_start"]
+other = [e for e in data if e.get("kind", "quick_start") != "quick_start"]
+qs = [e for e in qs if not same(e)]
+qs.insert(0, entry)
+qs = qs[:hist_max]
+data = qs + other
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
@@ -245,11 +290,14 @@ control_mode_menu() {
 # Maps menu choice → control_mode string; empty means back/cancel
 resolve_control_mode() {
   case "$1" in
-    1) echo "full_control" ;;
-    2) echo "pd_control" ;;
-    3) echo "position_velocity" ;;
     0) echo "" ;;
-    *) echo "INVALID" ;;
+    *)
+      if [ -n "${CONTROL_MODES[$1]:-}" ]; then
+        echo "${CONTROL_MODES[$1]}"
+      else
+        echo "INVALID"
+      fi
+      ;;
   esac
 }
 
@@ -309,12 +357,11 @@ ask_drag_mode() {
 # 每臂 6 值 CSV；dual 时 robot.xacro 自动拼接为 12 值（勿传 12 值，会拼成 24）
 # 仅 hardware:=real/real_usb 时 hardware_ 前缀才生效（build_xacro_mappings）
 drag_mode_args() {
-  local kp="0.01" kd="0.1" i
-  for ((i = 1; i < 6; i++)); do
-    kp+=", 0.01"
-    kd+=", 0.1"
-  done
-  echo "hardware_joint_kp:=${kp} hardware_joint_kd:=${kd} hardware_gripper_kp:=0.001 hardware_gripper_kd:=0.01"
+  # 用顶部常量数组拼接 CSV（每臂 6 值；dual 时 xacro 自动拼接为 12 值）
+  local kp kd
+  kp="$(IFS=', '; echo "${DRAG_JOINT_KP[*]}")"
+  kd="$(IFS=', '; echo "${DRAG_JOINT_KD[*]}")"
+  echo "hardware_joint_kp:=${kp} hardware_joint_kd:=${kd} hardware_gripper_kp:=${DRAG_GRIPPER_KP} hardware_gripper_kd:=${DRAG_GRIPPER_KD}"
 }
 
 # 重现一条历史启动配置 (idx: 0=最近, 1=次近)
@@ -329,7 +376,10 @@ try:
     d = json.load(open(path))
 except Exception:
     d = []
-if not isinstance(d, list) or idx >= len(d):
+if not isinstance(d, list):
+    d = []
+d = [e for e in d if e.get("kind", "quick_start") == "quick_start"]
+if idx >= len(d):
     print("single,mock_components,,false,auto")
     sys.exit(0)
 e = d[idx]
@@ -459,9 +509,9 @@ _run_ocs2_demo() {
     local -a drag_args
     read -r -a drag_args <<< "$(drag_mode_args "${jtype}")"
     echo -e "${BLUE}[INFO] 拖动模式：低刚度 kp/kd 已作为启动参数传入${NC}"
-    ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht "${extra_args[@]}" "${drag_args[@]}"
+    ros2 launch "${OCS2_LAUNCH_PKG}" "${OCS2_LAUNCH_FILE}" robot:=${ROBOT_NAME} "${extra_args[@]}" "${drag_args[@]}"
   else
-    ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht "${extra_args[@]}"
+    ros2 launch "${OCS2_LAUNCH_PKG}" "${OCS2_LAUNCH_FILE}" robot:=${ROBOT_NAME} "${extra_args[@]}"
   fi
 }
 
