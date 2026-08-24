@@ -6,7 +6,7 @@
 	path = src/ocs2_ros2
 	url = git@github.com:legubiao/ocs2_ros2.git
 	branch = ros2
-[submodule "src/robot-descriptions"]
-	path = src/robot-descriptions
-	url = git@github.com:fiveages-sim/robot_descriptions.git
-	branch = main
+[submodule "src/robot-descriptions-common"]
+	path = src/robot-descriptions-common
+	url = git@github.com:fiveages-sim/robot-descriptions-common.git
+	branch = feature/wuji

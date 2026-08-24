@@ -1,30 +1,18 @@
-# open-deploy-ws
+# open-deploy-ws（feature/wujihand2）
 
-ROS2 部署工作空间，集成双臂机械臂控制、机器人描述模型与 OCS2 MPC 框架。
+Wuji Hand2 精简部署工作空间：机械臂控制核心 + [robot-descriptions-common](https://github.com/fiveages-sim/robot-descriptions-common)（含 dexhands / wuji）+ OCS2。
 
-## 关于其他分支
-
-`main` 面向完整 / 通用部署工作空间。仓库中还有面向特定机型的精简分支，**只拉取该方案所需的包与子模块**，以减小克隆与部署体积：
-
-- **`dobot-cr5`**：Dobot CR5 部署工作空间，仅包含 CR5 相关描述、驱动与控制依赖
-- **`arx-acone`**：ARX Acone 部署工作空间，仅包含 Acone 相关描述、驱动与控制依赖
-
-使用时在克隆时指定分支，建议目录名与机型对应，例如：
-
-```bash
-git clone -b dobot-cr5 git@github.com:fiveages-sim/open-deploy-ws.git dobot_cr5_ws
-git clone -b arx-acone git@github.com:fiveages-sim/open-deploy-ws.git arx_acone_ws
-```
+完整 / 通用工作空间见 `main`；其它机型精简分支例如 `dobot-cr5`、`arx-lift2s`、`panthera-ht`。
 
 ## 工作空间结构
 
 ```
-open-deploy-ws/
+wuji_ws/
 ├── src/
-│   ├── arms_ros2_control/     # 机械臂控制核心（控制器 / 命令 / 硬件接口 / 公共库）
-│   ├── robot-descriptions/    # 机器人描述（common / manipulator / humanoid）
-│   └── ocs2_ros2/             # OCS2 MPC 框架
-├── init_repo.sh               # 一键初始化（可见性 + 逐模块 source/deb）
+│   ├── arms_ros2_control/          # 机械臂控制核心
+│   ├── robot-descriptions-common/  # 公共描述（跟踪 feature/wuji，含 dexhands/wuji_description）
+│   └── ocs2_ros2/                  # OCS2 MPC 框架
+├── init_repo.sh
 └── README.md
 ```
 
@@ -68,7 +56,7 @@ cd ros2_ws
 |------|------|--------|------|
 | ocs2 | `src/ocs2_ros2` | `ros-jazzy-ocs2` | **deb** |
 | arms | `src/arms_ros2_control` | `ros-jazzy-arms-ros2-control` | source |
-| common | `src/robot-descriptions/common` | `ros-jazzy-robot-descriptions-common` | source |
+| common | `src/robot-descriptions-common` | `ros-jazzy-robot-descriptions-common` | source |
 
 推荐业务组合（脚本默认）：**ocs2=deb，arms/common=source**。全源码即三模块都选 `s`；全 deb 即三模块都选 `d`。
 

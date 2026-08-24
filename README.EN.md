@@ -1,30 +1,18 @@
-# open-deploy-ws
+# open-deploy-ws (`feature/wujihand2`)
 
-A ROS 2 deployment workspace that integrates dual-arm manipulator control, robot description models, and the OCS2 MPC framework.
+Lean Wuji Hand2 deployment workspace: arm control core + [robot-descriptions-common](https://github.com/fiveages-sim/robot-descriptions-common) (dexhands / grippers / launch, including wuji) + OCS2.
 
-## About other branches
-
-`main` targets a full / general-purpose deployment workspace. The repository also provides lean branches for specific robot models that **pull only the packages and submodules required for that setup**, reducing clone and deployment size:
-
-- **`dobot-cr5`**: Dobot CR5 deployment workspace, containing only CR5-related description, driver, and control dependencies
-- **`arx-acone`**: ARX Acone deployment workspace, containing only Acone-related description, driver, and control dependencies
-
-When cloning, specify the branch and use a directory name that matches the robot model, for example:
-
-```bash
-git clone -b dobot-cr5 git@github.com:fiveages-sim/open-deploy-ws.git dobot_cr5_ws
-git clone -b arx-acone git@github.com:fiveages-sim/open-deploy-ws.git arx_acone_ws
-```
+See `main` for the full workspace; other lean branches include `dobot-cr5`, `arx-lift2s`, and `panthera-ht`.
 
 ## Workspace layout
 
 ```
-open-deploy-ws/
+wuji_ws/
 ├── src/
-│   ├── arms_ros2_control/     # Core arm control (controllers / commands / hardware interfaces / shared libs)
-│   ├── robot-descriptions/    # Robot descriptions (common / manipulator / humanoid)
-│   └── ocs2_ros2/             # OCS2 MPC framework
-├── init_repo.sh               # One-shot initialization (visibility + per-module source/deb)
+│   ├── arms_ros2_control/          # Core arm control
+│   ├── robot-descriptions-common/  # Shared descriptions (tracks feature/wuji; includes dexhands/wuji_description)
+│   └── ocs2_ros2/                  # OCS2 MPC framework
+├── init_repo.sh
 └── README.md
 ```
 
@@ -68,7 +56,7 @@ Two selection steps:
 |--------|------|-------------|---------|
 | ocs2 | `src/ocs2_ros2` | `ros-jazzy-ocs2` | **deb** |
 | arms | `src/arms_ros2_control` | `ros-jazzy-arms-ros2-control` | source |
-| common | `src/robot-descriptions/common` | `ros-jazzy-robot-descriptions-common` | source |
+| common | `src/robot-descriptions-common` | `ros-jazzy-robot-descriptions-common` | source |
 
 Recommended production combination (script default): **ocs2=deb, arms/common=source**. Full source means select `s` for all three modules; full deb means select `d` for all three.
 

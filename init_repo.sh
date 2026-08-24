@@ -137,7 +137,7 @@ module_short_to_path() {
     case "$1" in
         ocs2) echo "src/ocs2_ros2" ;;
         arms) echo "src/arms_ros2_control" ;;
-        common) echo "src/robot-descriptions/common" ;;
+        common) echo "src/robot-descriptions-common" ;;
         *) return 1 ;;
     esac
 }
@@ -316,7 +316,7 @@ if [ "$FLOW" = "init" ]; then
         "$( [ "$USE_DEB_OCS2" -eq 1 ] && echo d || echo s )" USE_DEB_OCS2
     prompt_sd "  arms_ros2_control      默认 $(mode_label "$USE_DEB_ARMS")" \
         "$( [ "$USE_DEB_ARMS" -eq 1 ] && echo d || echo s )" USE_DEB_ARMS
-    prompt_sd "  robot-descriptions/common 默认 $(mode_label "$USE_DEB_COMMON")" \
+    prompt_sd "  robot-descriptions-common 默认 $(mode_label "$USE_DEB_COMMON")" \
         "$( [ "$USE_DEB_COMMON" -eq 1 ] && echo d || echo s )" USE_DEB_COMMON
 fi
 
@@ -452,11 +452,12 @@ should_skip_top_submodule() {
     case "$path" in
         src/ocs2_ros2) [ "$USE_DEB_OCS2" -eq 1 ] && return 0 ;;
         src/arms_ros2_control) [ "$USE_DEB_ARMS" -eq 1 ] && return 0 ;;
+        src/robot-descriptions-common) [ "$USE_DEB_COMMON" -eq 1 ] && return 0 ;;
     esac
     return 1
 }
 
-# switch/init 共用：该顶层路径是否需要本次 git 操作（仅「有变化且目标为 source」；robot-descriptions 仅当 common 有变化）
+# switch/init 共用：该顶层路径是否需要本次 git 操作（仅「有变化且目标为 source」）
 should_touch_top_submodule() {
     local path="$1"
     case "$path" in
@@ -468,17 +469,9 @@ should_touch_top_submodule() {
             [ "$CHANGED_ARMS" -eq 1 ] && [ "$USE_DEB_ARMS" -eq 0 ]
             return $?
             ;;
-        src/robot-descriptions)
-            if [ "$FLOW" = "switch" ]; then
-                # common→source：父仓已存在则不 sync/pull（只 init nested common）；缺失才 clone
-                if [ "$CHANGED_COMMON" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 0 ]; then
-                    path_is_git_checkout "src/robot-descriptions" && return 1
-                    return 0
-                fi
-                return 1
-            fi
-            # init：始终需要父仓（common 用 deb 时仍要其他模型包）
-            return 0
+        src/robot-descriptions-common)
+            [ "$CHANGED_COMMON" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 0 ]
+            return $?
             ;;
         *)
             # 未知顶层子模块：init 时照常处理，switch 时不动以免误伤
@@ -486,14 +479,6 @@ should_touch_top_submodule() {
             return $?
             ;;
     esac
-}
-
-should_skip_nested_path() {
-    local relative_path="$1"
-    if [ "$relative_path" = "common" ] && [ "$USE_DEB_COMMON" -eq 1 ]; then
-        return 0
-    fi
-    return 1
 }
 
 should_skip_nested_spec() {
@@ -507,14 +492,6 @@ should_skip_nested_spec() {
                 ;;
             src/arms_ros2_control)
                 [ "$CHANGED_ARMS" -eq 1 ] && [ "$USE_DEB_ARMS" -eq 0 ] || return 0
-                ;;
-            src/robot-descriptions)
-                # 切换 common→source 时只初始化 common，不碰其他模型子模块
-                if [ "$CHANGED_COMMON" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 0 ] \
-                    && [ "$relative_path" = "common" ]; then
-                    return 1
-                fi
-                return 0
                 ;;
             *)
                 return 0
@@ -532,29 +509,17 @@ should_skip_nested_spec() {
             [ "$USE_DEB_OCS2" -eq 1 ] && return 0
             ;;
     esac
-    should_skip_nested_path "$relative_path"
+    return 1
 }
 
 remove_submodule_path() {
     local path="$1"
     print_info "清理源码目录: $path"
 
-    case "$path" in
-        src/robot-descriptions/common)
-            if [ -d "$REPO_DIR/src/robot-descriptions" ]; then
-                (cd "$REPO_DIR/src/robot-descriptions" && git submodule deinit -f -- common) \
-                    2>/dev/null || print_warn "  deinit $path 失败，继续删除目录..."
-            fi
-            rm -rf "$REPO_DIR/$path"
-            rm -rf "$REPO_DIR/.git/modules/src/robot-descriptions/modules/common" 2>/dev/null || true
-            ;;
-        *)
-            git -C "$REPO_DIR" submodule deinit -f -- "$path" \
-                2>/dev/null || print_warn "  deinit $path 失败，继续删除目录..."
-            rm -rf "$REPO_DIR/$path"
-            rm -rf "$REPO_DIR/.git/modules/$path" 2>/dev/null || true
-            ;;
-    esac
+    git -C "$REPO_DIR" submodule deinit -f -- "$path" \
+        2>/dev/null || print_warn "  deinit $path 失败，继续删除目录..."
+    rm -rf "$REPO_DIR/$path"
+    rm -rf "$REPO_DIR/.git/modules/$path" 2>/dev/null || true
     print_info "✓ 已清理 $path"
 }
 
@@ -567,7 +532,7 @@ cleanup_deb_module_sources() {
     [ "$CHANGED_ARMS" -eq 1 ] && [ "$USE_DEB_ARMS" -eq 1 ] && path_has_submodule_content "src/arms_ros2_control" && \
         paths_to_clean+=("src/arms_ros2_control")
     if [ "$CHANGED_COMMON" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 1 ]; then
-        full_path="src/robot-descriptions/common"
+        full_path="src/robot-descriptions-common"
         path_has_submodule_content "$full_path" && paths_to_clean+=("$full_path")
     fi
 
@@ -923,8 +888,8 @@ print_info ""
 print_info "后续步骤："
 print_info "  1. source /opt/ros/jazzy/setup.bash"
 if [ "$USE_DEB_OCS2" -eq 1 ] && [ "$USE_DEB_ARMS" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 1 ]; then
-    print_info "  2. 仅需编译 robot-descriptions 中的机器人模型包，例如："
-    print_info "     colcon build --packages-up-to <robot>_description --symlink-install"
+    print_info "  2. 仅需编译 robot-descriptions-common 中的模型包，例如："
+    print_info "     colcon build --packages-up-to <hand>_description --symlink-install"
 else
     print_info "  2. 按需 colcon build 编译源码模块"
 fi
