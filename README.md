@@ -1,6 +1,6 @@
 # open-deploy-ws（feature/wujihand2）
 
-Wuji Hand2 精简部署工作空间：机械臂控制核心 + [robot-descriptions-common](https://github.com/fiveages-sim/robot-descriptions-common)（含 dexhands / wuji）+ OCS2。
+Wuji Hand2 精简部署工作空间：机械臂控制核心 + [robot-descriptions-common](https://github.com/fiveages-sim/robot-descriptions-common)（含 dexhands / wuji）+ [wujihand2-ros2-control](https://github.com/fiveages-sim/wujihand2-ros2-control)（Hand2 以太网 HI）+ OCS2。
 
 完整 / 通用工作空间见 `main`；其它机型精简分支例如 `dobot-cr5`、`arx-lift2s`、`panthera-ht`。
 
@@ -9,10 +9,15 @@ Wuji Hand2 精简部署工作空间：机械臂控制核心 + [robot-description
 ```
 wuji_ws/
 ├── src/
-│   ├── arms_ros2_control/          # 机械臂控制核心
+│   ├── arms_ros2_control/          # 机械臂 / 灵巧手控制器（basic_joint_controller）
 │   ├── robot-descriptions-common/  # 公共描述（跟踪 feature/wuji，含 dexhands/wuji_description）
+│   ├── wujihand2-ros2-control/     # Wuji Hand2 ros2_control 硬件接口（以太网 + wuji-sdk）
 │   └── ocs2_ros2/                  # OCS2 MPC 框架
-├── init_repo.sh
+├── config/
+│   ├── quick_start.conf            # 编译 / 启动菜单配置
+│   └── hand.local.template.conf    # 本机 Hand2 IP 模板（复制为 hand.local.conf）
+├── init_repo.sh                    # 子模块初始化
+├── quick_start.sh                  # 编译与启动（推荐）
 └── README.md
 ```
 
@@ -94,6 +99,58 @@ deb 版本与仓库见 [`deb_versions.conf`](deb_versions.conf)；嵌套 public/
 4. 对源码路径运行 `rosdep install`
 5. 安装选为 deb 的包（顺序：ocs2 → common → arms）
 6. 将选择写入本地 `.core_module_mode`（已 gitignore），供下次默认参考
+
+### Wuji C SDK 与 Hand2 硬件接口
+
+`src/wujihand2-ros2-control` 为**仅源码**子模块（无 deb）。编译前需安装官方 [wuji-sdk-c](https://docs.wuji.tech)：
+
+```bash
+export WUJI_SDK_ROOT=/path/to/wuji-sdk-c-*-linux-gnu
+export LD_LIBRARY_PATH=$WUJI_SDK_ROOT/lib:$WUJI_SDK_ROOT:$LD_LIBRARY_PATH
+```
+
+真机 IP 可选：见下方「设备连接」；也可复制 `config/hand.local.template.conf` → `config/hand.local.conf`。
+
+## 编译与启动（quick_start）
+
+```bash
+./quick_start.sh
+# 1) 编译 — 仿真或真机包列表见 config/quick_start.conf
+# 2) 启动 — 左/右手、mock 或 real
+```
+
+### 设备连接（真机）
+
+**不必写死 `device_address`。** 优先级：
+
+1. `device_address:=IP:port` — 直连（双手同网、产线推荐）
+2. `serial_number:=SN` — 按序列号（`device_address` 为空时）
+3. 两者都留空 — **`wuji_scan()`** 扫描局域网 Hand2，再按 `direction`（1=左 / -1=右）匹配
+
+```bash
+# scan + 匹配左手（单只手或能区分左右时）
+ros2 launch wujihand2_ros2_control hand2.launch.py hardware:=real direction:=1
+
+# 指定 IP（跳过 scan）
+ros2 launch wujihand2_ros2_control hand2.launch.py \
+  hardware:=real direction:=1 device_address:=192.168.1.110:50001
+
+# 按序列号
+ros2 launch wujihand2_ros2_control hand2.launch.py \
+  hardware:=real direction:=1 serial_number:=YOUR_SN
+```
+
+`quick_start.sh` 真机模式：**回车** = SDK scan；输入 **`d`** = 使用 `hand.local.conf` / 模板默认 IP；或直接输入 `IP:port`。
+
+等价 mock 命令：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch basic_joint_controller hand.launch.py hand:=wuji type:=hand2
+```
+
+关节索引标定见 `src/wujihand2-ros2-control/CALIBRATION.md`。
 
 ## 测试环境
 

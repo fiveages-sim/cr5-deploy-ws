@@ -115,6 +115,41 @@ path_is_git_checkout() {
     (cd "$REPO_DIR/$path" && git rev-parse --git-dir >/dev/null 2>&1)
 }
 
+# Wuji Hand2 C SDK（无 deb；编译 wujihand2_ros2_control 需要）
+detect_wuji_sdk_root() {
+    local pattern path
+    if [ -n "${WUJI_SDK_ROOT:-}" ] && [ -f "${WUJI_SDK_ROOT}/include/wuji_sdk.h" ]; then
+        printf '%s' "${WUJI_SDK_ROOT}"
+        return 0
+    fi
+    for pattern in \
+        "${HOME}/Documents/wuji/wuji-sdk-c-"*"-linux-gnu" \
+        "${HOME}/wuji-sdk-c-"*"-linux-gnu" \
+        "/opt/wuji/wuji-sdk-c-"*"-linux-gnu"
+    do
+        for path in $pattern; do
+            [ -d "$path" ] && [ -f "$path/include/wuji_sdk.h" ] || continue
+            printf '%s' "$path"
+            return 0
+        done
+    done
+    return 1
+}
+
+print_wuji_sdk_hint() {
+    local sdk_root
+    sdk_root="$(detect_wuji_sdk_root 2>/dev/null || true)"
+    if [ -n "$sdk_root" ]; then
+        print_info "检测到 Wuji C SDK: $sdk_root"
+        print_info "  建议写入 ~/.bashrc: export WUJI_SDK_ROOT=$sdk_root"
+        print_info "  运行时: export LD_LIBRARY_PATH=\$WUJI_SDK_ROOT/lib:\$WUJI_SDK_ROOT:\$LD_LIBRARY_PATH"
+    else
+        print_warn "未检测到 Wuji C SDK（编译/运行 wujihand2_ros2_control 需要）"
+        print_info "  1) 从 https://docs.wuji.tech 下载 wuji-sdk-c tarball 并解压"
+        print_info "  2) export WUJI_SDK_ROOT=/path/to/wuji-sdk-c-*-linux-gnu"
+    fi
+}
+
 detect_module_state() {
     # 输出: deb | source | mixed | none
     local path="$1"
@@ -471,6 +506,11 @@ should_touch_top_submodule() {
             ;;
         src/robot-descriptions-common)
             [ "$CHANGED_COMMON" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 0 ]
+            return $?
+            ;;
+        src/wujihand2-ros2-control)
+            # Hand2 HI 仅源码，无 deb；init / switch 均拉取
+            [ "$FLOW" = "init" ] || [ "$FLOW" = "switch" ]
             return $?
             ;;
         *)
@@ -889,10 +929,14 @@ print_info "后续步骤："
 print_info "  1. source /opt/ros/jazzy/setup.bash"
 if [ "$USE_DEB_OCS2" -eq 1 ] && [ "$USE_DEB_ARMS" -eq 1 ] && [ "$USE_DEB_COMMON" -eq 1 ]; then
     print_info "  2. 仅需编译 robot-descriptions-common 中的模型包，例如："
-    print_info "     colcon build --packages-up-to <hand>_description --symlink-install"
+    print_info "     colcon build --packages-up-to wuji_description --symlink-install"
 else
-    print_info "  2. 按需 colcon build 编译源码模块"
+    print_info "  2. 按需 colcon build 编译源码模块（推荐 ./quick_start.sh → 编译）"
 fi
+print_info "  3. 配置 Wuji SDK 与本机 Hand 地址（见下方）"
+print_wuji_sdk_hint
+print_info "     cp config/hand.local.template.conf config/hand.local.conf  # 可选"
+print_info "  4. ./quick_start.sh  # 编译 / 启动 Hand2（mock 或 real）"
 print_info ""
 print_info "如需在源码与 deb 间切换，重新运行 ./init_repo.sh 并选择选项 2"
 print_info "如需更新子模块到最新提交，可以运行："

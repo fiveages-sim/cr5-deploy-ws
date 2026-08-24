@@ -32,3 +32,6 @@ Thumbs.db
 
 # init_repo.sh 记录的模块 source/deb 选择
 .core_module_mode
+
+# 本机 Hand2 网络配置（由 hand.local.template.conf 复制）
+config/hand.local.conf

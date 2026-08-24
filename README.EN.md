@@ -1,6 +1,6 @@
 # open-deploy-ws (`feature/wujihand2`)
 
-Lean Wuji Hand2 deployment workspace: arm control core + [robot-descriptions-common](https://github.com/fiveages-sim/robot-descriptions-common) (dexhands / grippers / launch, including wuji) + OCS2.
+Lean Wuji Hand2 deployment workspace: arm control core + [robot-descriptions-common](https://github.com/fiveages-sim/robot-descriptions-common) (dexhands / wuji) + [wujihand2-ros2-control](https://github.com/fiveages-sim/wujihand2-ros2-control) (Hand2 Ethernet HI) + OCS2.
 
 See `main` for the full workspace; other lean branches include `dobot-cr5`, `arx-lift2s`, and `panthera-ht`.
 
@@ -9,10 +9,15 @@ See `main` for the full workspace; other lean branches include `dobot-cr5`, `arx
 ```
 wuji_ws/
 ├── src/
-│   ├── arms_ros2_control/          # Core arm control
-│   ├── robot-descriptions-common/  # Shared descriptions (tracks feature/wuji; includes dexhands/wuji_description)
+│   ├── arms_ros2_control/          # Arm / hand controllers (basic_joint_controller)
+│   ├── robot-descriptions-common/  # Shared descriptions (tracks feature/wuji; dexhands/wuji_description)
+│   ├── wujihand2-ros2-control/     # Wuji Hand2 ros2_control hardware interface (Ethernet + wuji-sdk)
 │   └── ocs2_ros2/                  # OCS2 MPC framework
+├── config/
+│   ├── quick_start.conf            # Build / launch menu config
+│   └── hand.local.template.conf    # Local Hand2 IP template (copy to hand.local.conf)
 ├── init_repo.sh
+├── quick_start.sh                  # Build and launch (recommended)
 └── README.md
 ```
 
@@ -94,6 +99,53 @@ Deb versions and repositories are defined in [`deb_versions.conf`](deb_versions.
 4. Run `rosdep install` on source paths
 5. Install packages selected as deb (order: ocs2 → common → arms)
 6. Persist choices to local `.core_module_mode` (gitignored) for use as defaults next time
+
+### Wuji C SDK and Hand2 hardware interface
+
+`src/wujihand2-ros2-control` is a **source-only** submodule (no deb). Install the official [wuji-sdk-c](https://docs.wuji.tech) before building:
+
+```bash
+export WUJI_SDK_ROOT=/path/to/wuji-sdk-c-*-linux-gnu
+export LD_LIBRARY_PATH=$WUJI_SDK_ROOT/lib:$WUJI_SDK_ROOT:$LD_LIBRARY_PATH
+```
+
+Optional IPs: see **Device connection** below, or copy `config/hand.local.template.conf` → `config/hand.local.conf`.
+
+## Build and launch (`quick_start`)
+
+```bash
+./quick_start.sh
+# 1) Build — package lists in config/quick_start.conf
+# 2) Launch — left/right hand, mock or real
+```
+
+### Device connection (real hardware)
+
+**`device_address` is optional.** Priority:
+
+1. `device_address:=IP:port` — direct connect (recommended for dual-hand / production)
+2. `serial_number:=SN` — by serial (when `device_address` is empty)
+3. Both empty — **`wuji_scan()`** on the LAN, then match **`direction`** (1=left, -1=right)
+
+```bash
+ros2 launch wujihand2_ros2_control hand2.launch.py hardware:=real direction:=1
+ros2 launch wujihand2_ros2_control hand2.launch.py \
+  hardware:=real direction:=1 device_address:=192.168.1.110:50001
+ros2 launch wujihand2_ros2_control hand2.launch.py \
+  hardware:=real direction:=1 serial_number:=YOUR_SN
+```
+
+In `./quick_start.sh` real mode: **Enter** = SDK scan; **`d`** = default IP from config; or type `IP:port`.
+
+Mock:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch basic_joint_controller hand.launch.py hand:=wuji type:=hand2
+```
+
+Joint index calibration: `src/wujihand2-ros2-control/CALIBRATION.md`.
 
 ## Tested environment
 

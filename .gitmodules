@@ -10,3 +10,7 @@
 	path = src/robot-descriptions-common
 	url = git@github.com:fiveages-sim/robot-descriptions-common.git
 	branch = feature/wuji
+[submodule "src/wujihand2-ros2-control"]
+	path = src/wujihand2-ros2-control
+	url = git@github.com:fiveages-sim/wujihand2-ros2-control.git
+	branch = main
