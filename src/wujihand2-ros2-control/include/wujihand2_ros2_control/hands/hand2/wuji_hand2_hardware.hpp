@@ -118,6 +118,8 @@ private:
   std::array<double, kJointCount> feedback_positions_{};
   std::array<double, kJointCount> feedback_velocities_{};
   std::array<double, kJointCount> feedback_efforts_{};
+  /** Per-frame online mask: set from joint_states entries (nid); cleared each callback. */
+  std::array<bool, kJointCount> feedback_online_{};
   bool feedback_valid_{false};
 
   std::atomic_bool command_ready_{false};

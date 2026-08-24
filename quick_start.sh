@@ -46,16 +46,23 @@ need_cmd() {
   }
 }
 
+# ROS setup.bash 会引用可能未设置的 AMENT_* 变量；set -u 下 source 会报错
+_source_setup_bash() {
+  local setup_file="$1"
+  set +u
+  # shellcheck disable=SC1090
+  source "${setup_file}"
+  set -u
+}
+
 ensure_ros_underlay_for_build() {
   if [[ -n "${ROS_DISTRO:-}" && -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
-    # shellcheck disable=SC1090
-    source "/opt/ros/${ROS_DISTRO}/setup.bash"
+    _source_setup_bash "/opt/ros/${ROS_DISTRO}/setup.bash"
   else
     local distro
     for distro in jazzy humble iron rolling; do
       if [[ -f "/opt/ros/${distro}/setup.bash" ]]; then
-        # shellcheck disable=SC1090
-        source "/opt/ros/${distro}/setup.bash"
+        _source_setup_bash "/opt/ros/${distro}/setup.bash"
         print_info "已加载 /opt/ros/${distro}/setup.bash"
         break
       fi
@@ -71,8 +78,7 @@ ensure_ros_underlay_for_build() {
 
 ensure_ros_env() {
   if [[ -f "${WS_DIR}/install/setup.bash" ]]; then
-    # shellcheck disable=SC1090
-    source "${WS_DIR}/install/setup.bash"
+    _source_setup_bash "${WS_DIR}/install/setup.bash"
     return 0
   fi
   print_warn "未找到 ${WS_DIR}/install/setup.bash"
@@ -131,9 +137,10 @@ do_build() {
     pkg_args+=" ${pkg}"
   done
 
+  # WUJI_SDK_ROOT 仅 wujihand2_ros2_control 的 FindWujiSdk.cmake 会读（含 $ENV{WUJI_SDK_ROOT}）。
+  # 勿全局 --cmake-args -DWUJI_SDK_ROOT=，否则其它包会报 "variable was not used" 警告。
   # shellcheck disable=SC2086
-  colcon build --packages-up-to ${pkg_args} --symlink-install \
-    --cmake-args -DWUJI_SDK_ROOT="${WUJI_SDK_ROOT}"
+  colcon build --packages-up-to ${pkg_args} --symlink-install
   if [[ $? -eq 0 ]]; then
     print_info "编译完成。请执行: source install/setup.bash"
   else

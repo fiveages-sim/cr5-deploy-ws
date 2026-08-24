@@ -35,3 +35,5 @@ Thumbs.db
 
 # 本机 Hand2 网络配置（由 hand.local.template.conf 复制）
 config/hand.local.conf
+# quick_start 上次启动记录（对齐 fa_w2_ws）
+config/launch_last.conf

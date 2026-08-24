@@ -82,6 +82,7 @@ hardware_interface::CallbackReturn WujiHand2Hardware::on_init(
   }
 
   feedback_valid_ = false;
+  feedback_online_.fill(false);
   command_ready_ = false;
   last_sent_valid_ = false;
 
@@ -101,6 +102,7 @@ hardware_interface::CallbackReturn WujiHand2Hardware::on_activate(
   shutting_down_ = false;
   command_ready_ = false;
   feedback_valid_ = false;
+  feedback_online_.fill(false);
 
   // Official order: limit → MIT → enable → joint_command; subscribe after enable.
   if (!connect_device()) {
@@ -142,14 +144,15 @@ hardware_interface::CallbackReturn WujiHand2Hardware::on_activate(
   }
 
   if (!send_joint_commands(hw_commands_pos_)) {
-    RCLCPP_WARN(
+    RCLCPP_ERROR(
       rclcpp::get_logger(kLoggerName),
       "Initial hold send failed: %s", wuji_last_error());
-  } else {
-    last_sent_commands_ = hw_commands_pos_;
-    last_sent_valid_ = true;
+    safe_shutdown();
+    return hardware_interface::CallbackReturn::ERROR;
   }
 
+  last_sent_commands_ = hw_commands_pos_;
+  last_sent_valid_ = true;
   command_ready_ = true;
   RCLCPP_INFO(rclcpp::get_logger(kLoggerName), "Wuji Hand2 hardware activated");
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -212,9 +215,14 @@ hardware_interface::return_type WujiHand2Hardware::read(
 
   std::lock_guard<std::mutex> lock(feedback_mutex_);
   if (feedback_valid_) {
-    hw_positions_ = feedback_positions_;
-    hw_velocities_ = feedback_velocities_;
-    hw_efforts_ = feedback_efforts_;
+    for (std::size_t i = 0; i < kJointCount; ++i) {
+      if (!feedback_online_[i]) {
+        continue;
+      }
+      hw_positions_[i] = feedback_positions_[i];
+      hw_velocities_[i] = feedback_velocities_[i];
+      hw_efforts_[i] = feedback_efforts_[i];
+    }
   }
   // else: keep last hw_* values
   return hardware_interface::return_type::OK;
@@ -241,10 +249,11 @@ hardware_interface::return_type WujiHand2Hardware::write(
   }
 
   if (!send_joint_commands(clamped)) {
-    RCLCPP_WARN_THROTTLE(
-      rclcpp::get_logger(kLoggerName), *get_node()->get_clock(), 2000,
+    RCLCPP_ERROR(
+      rclcpp::get_logger(kLoggerName),
       "joint_command send failed: %s", wuji_last_error());
-    return hardware_interface::return_type::OK;
+    safe_shutdown();
+    return hardware_interface::return_type::ERROR;
   }
 
   last_sent_commands_ = clamped;
@@ -584,9 +593,10 @@ void WujiHand2Hardware::on_joint_states_callback(
   }
 
   std::lock_guard<std::mutex> lock(self->feedback_mutex_);
+  self->feedback_online_.fill(false);
   for (size_t i = 0; i < frame->joints_len; ++i) {
     const WujiJointStateEntry & entry = frame->joints[i];
-    const std::size_t sdk_i = static_cast<std::size_t>(entry.nid);
+    const std::size_t sdk_i = hand2::flat_index_from_joint_states_nid(entry.nid);
     if (sdk_i >= kJointCount) {
       continue;
     }
@@ -594,6 +604,7 @@ void WujiHand2Hardware::on_joint_states_callback(
     if (ros_i >= kJointCount) {
       continue;
     }
+    self->feedback_online_[ros_i] = true;
     self->feedback_positions_[ros_i] = static_cast<double>(entry.position);
     self->feedback_velocities_[ros_i] = static_cast<double>(entry.velocity);
     self->feedback_efforts_[ros_i] = static_cast<double>(entry.effort);
@@ -614,10 +625,15 @@ void WujiHand2Hardware::initialize_state_from_feedback()
   if (!feedback_valid_) {
     return;
   }
-  hw_positions_ = feedback_positions_;
-  hw_velocities_ = feedback_velocities_;
-  hw_efforts_ = feedback_efforts_;
-  hw_commands_pos_ = hw_positions_;
+  for (std::size_t i = 0; i < kJointCount; ++i) {
+    if (!feedback_online_[i]) {
+      continue;
+    }
+    hw_positions_[i] = feedback_positions_[i];
+    hw_velocities_[i] = feedback_velocities_[i];
+    hw_efforts_[i] = feedback_efforts_[i];
+    hw_commands_pos_[i] = hw_positions_[i];
+  }
 }
 
 bool WujiHand2Hardware::open_command_publisher()
@@ -675,12 +691,7 @@ bool WujiHand2Hardware::command_changed(
     return true;
   }
   if (command_deadband_ <= 0.0) {
-    for (std::size_t i = 0; i < kJointCount; ++i) {
-      if (ros_positions[i] != last_sent_commands_[i]) {
-        return true;
-      }
-    }
-    return false;
+    return true;
   }
   for (std::size_t i = 0; i < kJointCount; ++i) {
     if (std::abs(ros_positions[i] - last_sent_commands_[i]) > command_deadband_) {

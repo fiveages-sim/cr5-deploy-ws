@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -63,7 +64,7 @@ inline bool has_suffix(const std::string & value, std::string_view suffix)
          value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-/** Map ROS joint name → assumed SDK index; returns kJointCount if unknown. */
+/** Map ROS joint name → flat SDK index 0..19; returns kJointCount if unknown. */
 inline std::size_t sdk_index_for_joint_name(const std::string & joint_name)
 {
   for (std::size_t i = 0; i < kJointCount; ++i) {
@@ -72,6 +73,28 @@ inline std::size_t sdk_index_for_joint_name(const std::string & joint_name)
     }
   }
   return kJointCount;
+}
+
+/**
+ * joint_states `nid` on the wire: bus * 5 + node (1-based), range 1..24 with
+ * tactile slots at 5/10/15/20. Maps to flat finger-major index 0..19 used by
+ * joint_command and joint_label. Returns kJointCount if invalid.
+ */
+inline constexpr std::array<std::size_t, 26> kJointStatesNidToFlat = {
+  kJointCount,                     // 0 — unused
+  0, 1, 2, 3, kJointCount,         // 1..5   thumb + tactile@5
+  4, 5, 6, 7, kJointCount,         // 6..10  index + tactile@10
+  8, 9, 10, 11, kJointCount,       // 11..15 middle + tactile@15
+  12, 13, 14, 15, kJointCount,     // 16..20 ring + tactile@20
+  16, 17, 18, 19, kJointCount,     // 21..25 pinky + tactile@25
+};
+
+inline std::size_t flat_index_from_joint_states_nid(uint8_t nid)
+{
+  if (nid >= kJointStatesNidToFlat.size()) {
+    return kJointCount;
+  }
+  return kJointStatesNidToFlat[nid];
 }
 
 }  // namespace hand2
