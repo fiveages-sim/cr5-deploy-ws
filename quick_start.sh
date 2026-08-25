@@ -15,9 +15,9 @@ QS_CONFIG="${WS_DIR}/config/quick_start.conf"
 HAND_LOCAL_CONF="${WS_DIR}/config/hand.local.conf"
 QS_LAST_LAUNCH_FILE="${WS_DIR}/config/launch_last.conf"
 
-print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-print_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_info() { echo -e "${GREEN}[INFO]${NC} $1" >&2; }
+print_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
 _load_quick_start_config() {
   if [[ ! -f "${QS_CONFIG}" ]]; then
@@ -297,6 +297,7 @@ _ensure_wuji_scan_bin() {
   mkdir -p "${WS_DIR}/.cache"
   if [[ ! -x "${bin}" || "${src}" -nt "${bin}" || "${lib_dir}/libwuji_sdk_c.so" -nt "${bin}" ]]; then
     need_cmd gcc || return 1
+    # Absolute rpath so the binary works regardless of cwd.
     if ! gcc -O2 -o "${bin}" "${src}" \
       -I"${sdk_root}/include" \
       -L"${lib_dir}" \
@@ -311,6 +312,63 @@ _ensure_wuji_scan_bin() {
   printf '%s' "${bin}"
 }
 
+# Compile/cache scripts/wuji_hand2_info.c → .cache/wuji_hand2_info
+_ensure_wuji_hand2_info_bin() {
+  local src="${WS_DIR}/scripts/wuji_hand2_info.c"
+  local bin="${WS_DIR}/.cache/wuji_hand2_info"
+  local sdk_root lib_dir
+  [[ -f "${src}" ]] || {
+    print_error "缺少检验源码: ${src}"
+    return 1
+  }
+  ensure_wuji_sdk_env || return 1
+  sdk_root="${WUJI_SDK_ROOT}"
+  lib_dir="${WUJI_SDK_LIB_DIR}"
+  mkdir -p "${WS_DIR}/.cache"
+  if [[ ! -x "${bin}" || "${src}" -nt "${bin}" || "${lib_dir}/libwuji_sdk_c.so" -nt "${bin}" ]]; then
+    need_cmd gcc || return 1
+    if ! gcc -O2 -o "${bin}" "${src}" \
+      -I"${sdk_root}/include" \
+      -L"${lib_dir}" \
+      -lwuji_sdk_c \
+      -Wl,-rpath,"${lib_dir}" 2>/tmp/wuji_hand2_info_build.err
+    then
+      print_error "编译 wuji_hand2_info 失败:"
+      cat /tmp/wuji_hand2_info_build.err >&2 || true
+      return 1
+    fi
+  fi
+  printf '%s' "${bin}"
+}
+
+# Connect + print Hand2 info; confirm launch. expect_side=left|right. return 0 to proceed.
+_run_hand2_info_check() {
+  local addr="$1"
+  local expect_side="$2"
+  local bin rc confirm
+  bin="$(_ensure_wuji_hand2_info_bin)" || return 1
+  print_info "正在检验真机信息 (${addr}, expect=${expect_side}) ..."
+  rc=0
+  "${bin}" --address "${addr}" --expect "${expect_side}" || rc=$?
+  if [[ "${rc}" -eq 2 ]]; then
+    print_warn "左右手与所选不符，请换设备或改选另一侧后再启动。"
+    return 1
+  fi
+  if [[ "${rc}" -ne 0 ]]; then
+    print_error "真机信息检验失败（rc=${rc}）。请检查网线/地址/电源。"
+    return 1
+  fi
+  read -r -p "确认启动真机？[Y/n]: " confirm
+  confirm="${confirm:-Y}"
+  case "${confirm}" in
+    y|Y|yes|YES) return 0 ;;
+    *)
+      print_warn "已取消启动"
+      return 1
+      ;;
+  esac
+}
+
 # Run SDK scan; fill arrays SCAN_SNS / SCAN_ADDRS / SCAN_MODELS (Hand2 only).
 _wuji_scan_fill() {
   SCAN_SNS=()
@@ -318,7 +376,7 @@ _wuji_scan_fill() {
   SCAN_MODELS=()
   local bin line sn addr model
   bin="$(_ensure_wuji_scan_bin)" || return 1
-  print_info "正在 SDK 扫描 Hand2 ..." >&2
+  print_info "正在 SDK 扫描 Hand2 ..."
   while IFS=$'\t' read -r sn addr model; do
     [[ -z "${sn}" ]] && continue
     SCAN_SNS+=("${sn}")
@@ -340,7 +398,7 @@ _prompt_pick_scanned_device() {
     return 1
   fi
   if [[ "${n}" -eq 1 ]]; then
-    print_info "发现 1 台: SN=${SCAN_SNS[0]}  ${SCAN_ADDRS[0]}  (${SCAN_MODELS[0]})" >&2
+    print_info "发现 1 台: SN=${SCAN_SNS[0]}  ${SCAN_ADDRS[0]}  (${SCAN_MODELS[0]})"
     printf '%s' "${SCAN_ADDRS[0]}"
     return 0
   fi
@@ -360,23 +418,38 @@ _prompt_pick_scanned_device() {
   return 1
 }
 
-# Args: side_label
+# Prompt for IP:port on stdout; return 1 on invalid.
+_prompt_manual_address() {
+  local addr
+  read -r -p "请输入 IP:port: " addr
+  if [[ "${addr}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]]; then
+    printf '%s' "${addr}"
+    return 0
+  fi
+  print_warn "格式无效，应为 IP:port（例 192.168.2.110:7447）"
+  return 1
+}
+
+# Args: side_label expect_side (left|right)
 # Prints device_address (may be empty → launch-time scan), or QS_CONN_BACK.
 prompt_device_address() {
   local side_label="$1"
+  local expect_side="${2:-left}"
   local choice addr=""
 
   while true; do
     echo "" >&2
     echo -e "${BLUE}${side_label} 连接方式:${NC}" >&2
-    echo "  1) SDK 扫描并选择" >&2
-    echo "     启动前扫，列 SN+IP:port；多手/同手性点选。推荐。" >&2
-    echo "  2) 启动时自动扫描" >&2
+    echo "  1) 检验真机信息后启动（推荐）" >&2
+    echo "     扫描选设备 → 连接读取左右手/在线关节等 → 确认后再 launch。" >&2
+    echo "  2) SDK 扫描并选择（不检验）" >&2
+    echo "     启动前扫，列 SN+IP:port；多手/同手性点选。" >&2
+    echo "  3) 启动时自动扫描" >&2
     echo "     不传地址；activate 按左右手匹配。单手或左右各一可用；两只同侧勿用。" >&2
-    echo "  3) 手动输入 IP:port" >&2
+    echo "  4) 手动输入 IP:port" >&2
     echo "     已知地址时直连（例 192.168.2.110:7447）。" >&2
     echo "  0) 返回" >&2
-    read -r -p "请输入选项 [0-3] (默认: 1): " choice
+    read -r -p "请输入选项 [0-4] (默认: 1): " choice
     choice="${choice:-1}"
 
     case "${choice}" in
@@ -385,27 +458,36 @@ prompt_device_address() {
         return 0
         ;;
       1)
-        if addr="$(_prompt_pick_scanned_device)"; then
-          print_info "将使用 device_address:=${addr}" >&2
+        addr="$(_prompt_pick_scanned_device)" || {
+          print_warn "扫描失败。可选手动输入地址后检验。"
+          addr="$(_prompt_manual_address)" || continue
+        }
+        if _run_hand2_info_check "${addr}" "${expect_side}"; then
+          print_info "将使用 device_address:=${addr}"
           printf '%s' "${addr}"
           return 0
         fi
-        # cancel / fail → re-show connection menu
         continue
         ;;
       2)
-        print_info "未指定地址 → 启动时由硬件接口 wuji_scan + direction 匹配" >&2
-        printf '%s' ""
-        return 0
-        ;;
-      3)
-        read -r -p "请输入 IP:port: " addr
-        if [[ "${addr}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]]; then
-          print_info "将使用 device_address:=${addr}" >&2
+        if addr="$(_prompt_pick_scanned_device)"; then
+          print_info "将使用 device_address:=${addr}"
           printf '%s' "${addr}"
           return 0
         fi
-        print_warn "格式无效，应为 IP:port（例 192.168.2.110:7447）"
+        continue
+        ;;
+      3)
+        print_info "未指定地址 → 启动时由硬件接口 wuji_scan + direction 匹配"
+        printf '%s' ""
+        return 0
+        ;;
+      4)
+        if addr="$(_prompt_manual_address)"; then
+          print_info "将使用 device_address:=${addr}"
+          printf '%s' "${addr}"
+          return 0
+        fi
         continue
         ;;
       *)
@@ -460,6 +542,7 @@ do_launch_flow() {
   echo "请选择启动项:"
   if [[ -n "${LAST_REAL_MODE:-}" ]]; then
     echo "  1) 使用上次真机 — $(_format_real_last_label)"
+    echo "     （一键；建议新手上机先走「左手/右手 → 真机 → 检验信息」）"
     echo "  2) 左手 Hand2"
     echo "  3) 右手 Hand2"
     echo "  0) 返回"
@@ -488,13 +571,15 @@ do_launch_flow() {
     esac
   fi
 
-  local direction side_label device_address mode_choice use_rviz desc
+  local direction side_label expect_side device_address mode_choice use_rviz desc
   if [[ "${choice}" == "left" ]]; then
     direction="1"
     side_label="左手"
+    expect_side="left"
   else
     direction="-1"
     side_label="右手"
+    expect_side="right"
   fi
 
   mode_choice="$(launch_mode_menu)"
@@ -507,7 +592,7 @@ do_launch_flow() {
     2) desc="${side_label} Hand2 仿真 headless"; use_rviz="false" ;;
     3)
       desc="${side_label} Hand2 真机"
-      device_address="$(prompt_device_address "${side_label}")"
+      device_address="$(prompt_device_address "${side_label}" "${expect_side}")"
       if [[ "${device_address}" == "${QS_CONN_BACK}" ]]; then
         echo "返回"
         return
@@ -516,7 +601,7 @@ do_launch_flow() {
     4)
       desc="${side_label} Hand2 真机 headless"
       use_rviz="false"
-      device_address="$(prompt_device_address "${side_label}")"
+      device_address="$(prompt_device_address "${side_label}" "${expect_side}")"
       if [[ "${device_address}" == "${QS_CONN_BACK}" ]]; then
         echo "返回"
         return
@@ -585,7 +670,7 @@ if [[ -f "${HAND_LOCAL_CONF}" ]]; then
 else
   print_warn "未找到 config/hand.local.conf（真机可不建；固定地址可用连接菜单「手动输入」）"
 fi
-print_info "真机: 使用上次真机 | 扫描选设备 | 启动时扫描 | 手输 IP:port（见启动菜单）"
+print_info "真机: 建议「检验真机信息后启动」；或使用上次 / 扫描 / 手输 IP（见启动菜单）"
 
 case "$(menu)" in
   1)

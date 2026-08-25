@@ -142,14 +142,15 @@ ros2 launch wujihand2_ros2_control hand2.launch.py \
 
 In `./quick_start.sh` real mode:
 
-- **Launch item “last real hand”** — remembers side + IP (`LAST_REAL_*`; sim does not overwrite)
+- **Launch item “last real hand”** — remembers side + IP (`LAST_REAL_*`; sim does not overwrite; one-click, no forced info check)
 - **Connect menu**
-  1. SDK scan and pick — lists SN + real `IP:port` (recommended)
-  2. Scan at launch — omit address; hardware matches `direction`
-  3. Type `IP:port` manually
+  1. **Verify hand info then launch (recommended)** — scan/pick → print handedness / online joints → confirm
+  2. SDK scan and pick (skip verify)
+  3. Scan at launch — omit address; hardware matches `direction`
+  4. Type `IP:port` manually
   0. Back
 
-Prefer scan: some devices advertise `:7447` instead of the docs' `:50001`.
+Prefer scan / verify: some devices advertise `:7447` instead of the docs' `:50001`.
 
 Mock:
 
