@@ -10,6 +10,8 @@ __pycache__/
 *.pyd
 .Python
 *.so
+# Track vendored Wuji C SDK prebuilts (x86_64 + aarch64)
+!src/wujihand2-ros2-control/external/wuji-sdk-c/lib/**/*.so
 
 # IDE files
 .vscode/
@@ -26,6 +28,9 @@ Thumbs.db
 *.tmp
 *.temp
 .codex
+
+# quick_start 本地扫描工具缓存
+.cache/
 
 # deb 安装脚本下载缓存（install_core_debs.sh）
 .deb_cache/

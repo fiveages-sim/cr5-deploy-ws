@@ -115,11 +115,20 @@ path_is_git_checkout() {
     (cd "$REPO_DIR/$path" && git rev-parse --git-dir >/dev/null 2>&1)
 }
 
-# Wuji Hand2 C SDK（无 deb；编译 wujihand2_ros2_control 需要）
+# Wuji Hand2 C SDK（已 vendor 于 wujihand2-ros2-control/external/wuji-sdk-c）
 detect_wuji_sdk_root() {
-    local pattern path
+    local pattern path vendor arch
+    vendor="${REPO_DIR}/src/wujihand2-ros2-control/external/wuji-sdk-c"
+    case "$(uname -m)" in
+        aarch64|arm64) arch=aarch64 ;;
+        *) arch=x86_64 ;;
+    esac
     if [ -n "${WUJI_SDK_ROOT:-}" ] && [ -f "${WUJI_SDK_ROOT}/include/wuji_sdk.h" ]; then
         printf '%s' "${WUJI_SDK_ROOT}"
+        return 0
+    fi
+    if [ -f "${vendor}/include/wuji_sdk.h" ] && [ -f "${vendor}/lib/${arch}/libwuji_sdk_c.so" ]; then
+        printf '%s' "${vendor}"
         return 0
     fi
     for pattern in \
@@ -137,16 +146,18 @@ detect_wuji_sdk_root() {
 }
 
 print_wuji_sdk_hint() {
-    local sdk_root
+    local sdk_root vendor
+    vendor="${REPO_DIR}/src/wujihand2-ros2-control/external/wuji-sdk-c"
     sdk_root="$(detect_wuji_sdk_root 2>/dev/null || true)"
-    if [ -n "$sdk_root" ]; then
-        print_info "检测到 Wuji C SDK: $sdk_root"
+    if [ -d "$vendor/include" ] && [ -f "$vendor/include/wuji_sdk.h" ]; then
+        print_info "Wuji C SDK 已 vendor: $vendor（版本见该目录 README）"
+        print_info "  无需 export WUJI_SDK_ROOT；调试覆盖可用经典 tarball 路径"
+    elif [ -n "$sdk_root" ]; then
+        print_info "检测到外部 Wuji C SDK: $sdk_root"
         print_info "  建议写入 ~/.bashrc: export WUJI_SDK_ROOT=$sdk_root"
-        print_info "  运行时: export LD_LIBRARY_PATH=\$WUJI_SDK_ROOT/lib:\$WUJI_SDK_ROOT:\$LD_LIBRARY_PATH"
     else
-        print_warn "未检测到 Wuji C SDK（编译/运行 wujihand2_ros2_control 需要）"
-        print_info "  1) 从 https://docs.wuji.tech 下载 wuji-sdk-c tarball 并解压"
-        print_info "  2) export WUJI_SDK_ROOT=/path/to/wuji-sdk-c-*-linux-gnu"
+        print_warn "未找到 Wuji C SDK（期望 $vendor）"
+        print_info "  见 src/wujihand2-ros2-control/external/wuji-sdk-c/README.md"
     fi
 }
 

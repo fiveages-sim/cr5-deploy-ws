@@ -102,11 +102,16 @@ Deb versions and repositories are defined in [`deb_versions.conf`](deb_versions.
 
 ### Wuji C SDK and Hand2 hardware interface
 
-`src/wujihand2-ros2-control` is a **source-only** submodule (no deb). Install the official [wuji-sdk-c](https://docs.wuji.tech) before building:
+### Wuji C SDK and Hand2 hardware interface
+
+`src/wujihand2-ros2-control` is a **source-only** submodule (no deb). The official C SDK is vendored at:
+
+`src/wujihand2-ros2-control/external/wuji-sdk-c/` (`include/` + `lib/x86_64` + `lib/aarch64`)
+
+`WUJI_SDK_ROOT` is not required by default. Optional override for debugging:
 
 ```bash
-export WUJI_SDK_ROOT=/path/to/wuji-sdk-c-*-linux-gnu
-export LD_LIBRARY_PATH=$WUJI_SDK_ROOT/lib:$WUJI_SDK_ROOT:$LD_LIBRARY_PATH
+export WUJI_SDK_ROOT=/path/to/wuji-sdk-c-*-linux-gnu   # optional
 ```
 
 Optional IPs: see **Device connection** below, or copy `config/hand.local.template.conf` → `config/hand.local.conf`.
@@ -135,7 +140,16 @@ ros2 launch wujihand2_ros2_control hand2.launch.py \
   hardware:=real direction:=1 serial_number:=YOUR_SN
 ```
 
-In `./quick_start.sh` real mode: **Enter** = SDK scan; **`d`** = default IP from config; or type `IP:port`.
+In `./quick_start.sh` real mode:
+
+- **Launch item “last real hand”** — remembers side + IP (`LAST_REAL_*`; sim does not overwrite)
+- **Connect menu**
+  1. SDK scan and pick — lists SN + real `IP:port` (recommended)
+  2. Scan at launch — omit address; hardware matches `direction`
+  3. Type `IP:port` manually
+  0. Back
+
+Prefer scan: some devices advertise `:7447` instead of the docs' `:50001`.
 
 Mock:
 

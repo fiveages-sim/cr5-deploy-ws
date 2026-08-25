@@ -102,11 +102,14 @@ deb 版本与仓库见 [`deb_versions.conf`](deb_versions.conf)；嵌套 public/
 
 ### Wuji C SDK 与 Hand2 硬件接口
 
-`src/wujihand2-ros2-control` 为**仅源码**子模块（无 deb）。编译前需安装官方 [wuji-sdk-c](https://docs.wuji.tech)：
+`src/wujihand2-ros2-control` 为**仅源码**子模块（无 deb）。官方 C SDK 已 vendor 于：
+
+`src/wujihand2-ros2-control/external/wuji-sdk-c/`（`include/` + `lib/x86_64` + `lib/aarch64`）
+
+默认无需 `WUJI_SDK_ROOT`。调试时可覆盖：
 
 ```bash
-export WUJI_SDK_ROOT=/path/to/wuji-sdk-c-*-linux-gnu
-export LD_LIBRARY_PATH=$WUJI_SDK_ROOT/lib:$WUJI_SDK_ROOT:$LD_LIBRARY_PATH
+export WUJI_SDK_ROOT=/path/to/wuji-sdk-c-*-linux-gnu   # 可选
 ```
 
 真机 IP 可选：见下方「设备连接」；也可复制 `config/hand.local.template.conf` → `config/hand.local.conf`。
@@ -140,7 +143,16 @@ ros2 launch wujihand2_ros2_control hand2.launch.py \
   hardware:=real direction:=1 serial_number:=YOUR_SN
 ```
 
-`quick_start.sh` 真机模式：**回车** = SDK scan；输入 **`d`** = 使用 `hand.local.conf` / 模板默认 IP；或直接输入 `IP:port`。
+`quick_start.sh` 真机连接：
+
+- **启动项「使用上次真机」** — 记住左右手 + IP（`LAST_REAL_*`，仿真不会覆盖）
+- **连接方式**
+  1. SDK 扫描并选择 — 启动前扫，列 SN+IP:port；多手/同手性点选（推荐）
+  2. 启动时自动扫描 — 不传地址，activate 按左右手匹配
+  3. 手动输入 IP:port — 已知固定地址
+  0. 返回
+
+部分设备上报端口为 `:7447` 而非文档默认 `:50001`，优先用扫描。
 
 等价 mock 命令：
 
