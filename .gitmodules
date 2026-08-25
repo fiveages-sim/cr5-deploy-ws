@@ -21,6 +21,3 @@
 [submodule "src/drag_teleop_controller"]
 	path = src/drag_teleop_controller
 	url = git@github.com:fiveages-sim/drag_teleop_controller.git
-[submodule "src/teleop-joint-mapper"]
-	path = src/teleop-joint-mapper
-	url = git@github.com:fiveages-sim/teleop-joint-mapper.git
