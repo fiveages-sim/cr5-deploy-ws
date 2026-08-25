@@ -121,12 +121,12 @@ Optional IPs: see **Device connection** below, or copy `config/hand.local.templa
 ```bash
 ./quick_start.sh
 # 1) Build — package lists in config/quick_start.conf
-# 2) Launch — left/right hand, mock or real
+# 2) Launch — left / right / both hands, mock or real
 ```
 
 ### Device connection (real hardware)
 
-**`device_address` is optional.** Priority:
+**Single hand:** `device_address` is optional. Priority:
 
 1. `device_address:=IP:port` — direct connect (recommended for dual-hand / production)
 2. `serial_number:=SN` — by serial (when `device_address` is empty)
@@ -138,17 +138,23 @@ ros2 launch wujihand2_ros2_control hand2.launch.py \
   hardware:=real direction:=1 device_address:=192.168.1.110:50001
 ros2 launch wujihand2_ros2_control hand2.launch.py \
   hardware:=real direction:=1 serial_number:=YOUR_SN
+
+# Dual hands (fixed left/right addresses; one left + one right)
+ros2 launch wujihand2_ros2_control hands2.launch.py hardware:=real \
+  device_address_left:=192.168.1.110:50001 \
+  device_address_right:=192.168.1.111:50001
 ```
 
 In `./quick_start.sh` real mode:
 
-- **Launch item “last real hand”** — remembers side + IP (`LAST_REAL_*`; sim does not overwrite; one-click, no forced info check)
-- **Connect menu**
-  1. **Verify hand info then launch (recommended)** — scan/pick → print handedness / online joints → confirm
-  2. SDK scan and pick (skip verify)
+- **Launch item “last real hand”** — remembers single or dual addresses (`LAST_REAL_*`; sim does not overwrite)
+- **Single-hand connect menu**
+  1. **Verify hand info then launch (recommended)** — scan, list this side only → print handedness / online joints → confirm
+  2. SDK scan and pick (skip verify) — same SN-side filter (J=left / K=right)
   3. Scan at launch — omit address; hardware matches `direction`
   4. Type `IP:port` manually
   0. Back
+- **Dual-hand connect** — pick left then right: verify / scan-pick / manual (**no** launch-time scan; addresses must differ; scan filtered by side)
 
 Prefer scan / verify: some devices advertise `:7447` instead of the docs' `:50001`.
 

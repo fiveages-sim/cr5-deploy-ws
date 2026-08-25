@@ -191,23 +191,52 @@ QS_CONN_BACK="__BACK__"
 
 _save_launch_last() {
   local desc="${1:-}" mode="${2:-}" direction="${3:-}" device_address="${4:-}" use_rviz="${5:-}"
-  # Preserve LAST_REAL_* across sim launches; refresh only on real (mode 3/4).
+  local kind="${6:-single}"
+  local addr_left="${7:-}"
+  local addr_right="${8:-}"
+  # Preserve LAST_REAL_* across sim; LAST_SIM_* across real. Refresh each on its mode.
   local real_desc="${LAST_REAL_DESC:-}"
   local real_mode="${LAST_REAL_MODE:-}"
   local real_direction="${LAST_REAL_DIRECTION:-}"
   local real_device_address="${LAST_REAL_DEVICE_ADDRESS:-}"
   local real_use_rviz="${LAST_REAL_USE_RVIZ:-}"
+  local real_kind="${LAST_REAL_KIND:-single}"
+  local real_addr_left="${LAST_REAL_DEVICE_ADDRESS_LEFT:-}"
+  local real_addr_right="${LAST_REAL_DEVICE_ADDRESS_RIGHT:-}"
+  local sim_desc="${LAST_SIM_DESC:-}"
+  local sim_mode="${LAST_SIM_MODE:-}"
+  local sim_direction="${LAST_SIM_DIRECTION:-}"
+  local sim_use_rviz="${LAST_SIM_USE_RVIZ:-}"
+  local sim_kind="${LAST_SIM_KIND:-single}"
+
   if [[ "${mode}" =~ ^[34]$ ]]; then
     real_desc="${desc}"
     real_mode="${mode}"
     real_direction="${direction}"
     real_device_address="${device_address}"
     real_use_rviz="${use_rviz}"
+    real_kind="${kind}"
+    real_addr_left="${addr_left}"
+    real_addr_right="${addr_right}"
     LAST_REAL_DESC="${real_desc}"
     LAST_REAL_MODE="${real_mode}"
     LAST_REAL_DIRECTION="${real_direction}"
     LAST_REAL_DEVICE_ADDRESS="${real_device_address}"
     LAST_REAL_USE_RVIZ="${real_use_rviz}"
+    LAST_REAL_KIND="${real_kind}"
+    LAST_REAL_DEVICE_ADDRESS_LEFT="${real_addr_left}"
+    LAST_REAL_DEVICE_ADDRESS_RIGHT="${real_addr_right}"
+  elif [[ "${mode}" =~ ^[12]$ ]]; then
+    sim_desc="${desc}"
+    sim_mode="${mode}"
+    sim_direction="${direction}"
+    sim_use_rviz="${use_rviz}"
+    sim_kind="${kind}"
+    LAST_SIM_DESC="${sim_desc}"
+    LAST_SIM_MODE="${sim_mode}"
+    LAST_SIM_DIRECTION="${sim_direction}"
+    LAST_SIM_USE_RVIZ="${sim_use_rviz}"
+    LAST_SIM_KIND="${sim_kind}"
   fi
 
   mkdir -p "$(dirname "${QS_LAST_LAUNCH_FILE}")"
@@ -217,18 +246,33 @@ _save_launch_last() {
     printf 'LAST_DIRECTION=%q\n' "${direction}"
     printf 'LAST_DEVICE_ADDRESS=%q\n' "${device_address}"
     printf 'LAST_USE_RVIZ=%q\n' "${use_rviz}"
+    printf 'LAST_KIND=%q\n' "${kind}"
+    printf 'LAST_DEVICE_ADDRESS_LEFT=%q\n' "${addr_left}"
+    printf 'LAST_DEVICE_ADDRESS_RIGHT=%q\n' "${addr_right}"
+    printf 'LAST_SIM_DESC=%q\n' "${sim_desc}"
+    printf 'LAST_SIM_MODE=%q\n' "${sim_mode}"
+    printf 'LAST_SIM_DIRECTION=%q\n' "${sim_direction}"
+    printf 'LAST_SIM_USE_RVIZ=%q\n' "${sim_use_rviz}"
+    printf 'LAST_SIM_KIND=%q\n' "${sim_kind}"
     printf 'LAST_REAL_DESC=%q\n' "${real_desc}"
     printf 'LAST_REAL_MODE=%q\n' "${real_mode}"
     printf 'LAST_REAL_DIRECTION=%q\n' "${real_direction}"
     printf 'LAST_REAL_DEVICE_ADDRESS=%q\n' "${real_device_address}"
     printf 'LAST_REAL_USE_RVIZ=%q\n' "${real_use_rviz}"
+    printf 'LAST_REAL_KIND=%q\n' "${real_kind}"
+    printf 'LAST_REAL_DEVICE_ADDRESS_LEFT=%q\n' "${real_addr_left}"
+    printf 'LAST_REAL_DEVICE_ADDRESS_RIGHT=%q\n' "${real_addr_right}"
   } > "${QS_LAST_LAUNCH_FILE}"
 }
 
 _load_launch_last() {
   LAST_DESC="" LAST_MODE="" LAST_DIRECTION="" LAST_DEVICE_ADDRESS="" LAST_USE_RVIZ=""
+  LAST_KIND="single" LAST_DEVICE_ADDRESS_LEFT="" LAST_DEVICE_ADDRESS_RIGHT=""
+  LAST_SIM_DESC="" LAST_SIM_MODE="" LAST_SIM_DIRECTION="" LAST_SIM_USE_RVIZ=""
+  LAST_SIM_KIND="single"
   LAST_REAL_DESC="" LAST_REAL_MODE="" LAST_REAL_DIRECTION=""
   LAST_REAL_DEVICE_ADDRESS="" LAST_REAL_USE_RVIZ=""
+  LAST_REAL_KIND="single" LAST_REAL_DEVICE_ADDRESS_LEFT="" LAST_REAL_DEVICE_ADDRESS_RIGHT=""
   [[ -f "${QS_LAST_LAUNCH_FILE}" ]] && source "${QS_LAST_LAUNCH_FILE}" 2>/dev/null || true
   # Migrate older launch_last.conf that only had LAST_* from a real run.
   if [[ -z "${LAST_REAL_MODE:-}" && "${LAST_MODE:-}" =~ ^[34]$ ]]; then
@@ -237,21 +281,82 @@ _load_launch_last() {
     LAST_REAL_DIRECTION="${LAST_DIRECTION}"
     LAST_REAL_DEVICE_ADDRESS="${LAST_DEVICE_ADDRESS}"
     LAST_REAL_USE_RVIZ="${LAST_USE_RVIZ}"
+    LAST_REAL_KIND="${LAST_KIND:-single}"
+    LAST_REAL_DEVICE_ADDRESS_LEFT="${LAST_DEVICE_ADDRESS_LEFT:-}"
+    LAST_REAL_DEVICE_ADDRESS_RIGHT="${LAST_DEVICE_ADDRESS_RIGHT:-}"
   fi
+  # Migrate: if LAST_* was sim and LAST_SIM_* empty, seed sim slot.
+  if [[ -z "${LAST_SIM_MODE:-}" && "${LAST_MODE:-}" =~ ^[12]$ ]]; then
+    LAST_SIM_DESC="${LAST_DESC}"
+    LAST_SIM_MODE="${LAST_MODE}"
+    LAST_SIM_DIRECTION="${LAST_DIRECTION}"
+    LAST_SIM_USE_RVIZ="${LAST_USE_RVIZ}"
+    LAST_SIM_KIND="${LAST_KIND:-single}"
+  fi
+  [[ -n "${LAST_REAL_KIND:-}" ]] || LAST_REAL_KIND="single"
+  [[ -n "${LAST_SIM_KIND:-}" ]] || LAST_SIM_KIND="single"
+}
+
+_format_side_label() {
+  local direction="${1:-1}" kind="${2:-single}"
+  if [[ "${kind}" == "dual" ]]; then
+    printf '双手'
+    return
+  fi
+  [[ "${direction}" == "-1" ]] && { printf '右手'; return; }
+  printf '左手'
+}
+
+_format_sim_last_label() {
+  local rviz=""
+  [[ "${LAST_SIM_USE_RVIZ:-}" == "true" ]] && rviz=" +RViz"
+  local headless=""
+  [[ "${LAST_SIM_MODE:-}" == "2" ]] && headless=" headless"
+  printf '%s 仿真%s%s' "$(_format_side_label "${LAST_SIM_DIRECTION:-1}" "${LAST_SIM_KIND:-single}")" \
+    "${headless}" "${rviz}"
 }
 
 _format_real_last_label() {
-  local side="左手"
-  [[ "${LAST_REAL_DIRECTION:-}" == "-1" ]] && side="右手"
+  local rviz=""
+  [[ "${LAST_REAL_USE_RVIZ:-}" == "true" ]] && rviz=" +RViz"
+  if [[ "${LAST_REAL_KIND:-single}" == "dual" ]]; then
+    local L="${LAST_REAL_DEVICE_ADDRESS_LEFT:-?}"
+    local R="${LAST_REAL_DEVICE_ADDRESS_RIGHT:-?}"
+    printf '双手 L@%s R@%s%s' "${L}" "${R}" "${rviz}"
+    return
+  fi
+  local side
+  side="$(_format_side_label "${LAST_REAL_DIRECTION:-1}" "single")"
   local addr_part
   if [[ -n "${LAST_REAL_DEVICE_ADDRESS:-}" ]]; then
     addr_part="@ ${LAST_REAL_DEVICE_ADDRESS}"
   else
     addr_part="(启动时 scan)"
   fi
-  local rviz=""
-  [[ "${LAST_REAL_USE_RVIZ:-}" == "true" ]] && rviz=" +RViz"
-  printf '%s %s%s' "${side}" "${addr_part}" "${rviz}"
+  local headless=""
+  [[ "${LAST_REAL_MODE:-}" == "4" ]] && headless=" headless"
+  printf '%s%s %s%s' "${side}" "${headless}" "${addr_part}" "${rviz}"
+}
+
+_replay_last_sim() {
+  if [[ "${LAST_SIM_KIND:-single}" == "dual" ]]; then
+    do_launch_hands "${LAST_SIM_MODE}" "" "" \
+      "${LAST_SIM_USE_RVIZ}" "${LAST_SIM_DESC}"
+  else
+    do_launch_hand "${LAST_SIM_MODE}" "${LAST_SIM_DIRECTION}" \
+      "" "${LAST_SIM_USE_RVIZ}" "${LAST_SIM_DESC}"
+  fi
+}
+
+_replay_last_real() {
+  if [[ "${LAST_REAL_KIND:-single}" == "dual" ]]; then
+    do_launch_hands "${LAST_REAL_MODE}" \
+      "${LAST_REAL_DEVICE_ADDRESS_LEFT}" "${LAST_REAL_DEVICE_ADDRESS_RIGHT}" \
+      "${LAST_REAL_USE_RVIZ}" "${LAST_REAL_DESC}"
+  else
+    do_launch_hand "${LAST_REAL_MODE}" "${LAST_REAL_DIRECTION}" \
+      "${LAST_REAL_DEVICE_ADDRESS}" "${LAST_REAL_USE_RVIZ}" "${LAST_REAL_DESC}"
+  fi
 }
 
 launch_mode_menu() {
@@ -369,6 +474,26 @@ _run_hand2_info_check() {
   esac
 }
 
+# Hand2 SN[3]: J/j=left, K/k=right (official SDK convention). Else unknown.
+_hand2_side_from_sn() {
+  local sn="${1:-}"
+  if [[ "${#sn}" -gt 3 ]]; then
+    case "${sn:3:1}" in
+      J|j) printf 'left'; return 0 ;;
+      K|k) printf 'right'; return 0 ;;
+    esac
+  fi
+  printf 'unknown'
+}
+
+_hand2_side_label_zh() {
+  case "${1:-}" in
+    left) printf '左手' ;;
+    right) printf '右手' ;;
+    *) printf '未知侧' ;;
+  esac
+}
+
 # Run SDK scan; fill arrays SCAN_SNS / SCAN_ADDRS / SCAN_MODELS (Hand2 only).
 _wuji_scan_fill() {
   SCAN_SNS=()
@@ -386,36 +511,110 @@ _wuji_scan_fill() {
   return 0
 }
 
-# Interactive pick from scan results → stdout address; return 1 on cancel/fail.
-_prompt_pick_scanned_device() {
-  _wuji_scan_fill || {
-    print_warn "扫描工具不可用，请改选手动输入 IP:port 或启动时扫描"
-    return 1
-  }
-  local n="${#SCAN_ADDRS[@]}"
+# Print pick list from parallel arrays FILT_SNS/ADDRS/MODELS/SIDES; stdout address.
+# Returns 1 on cancel.
+_prompt_pick_from_filt_arrays() {
+  local n="${#FILT_ADDRS[@]}"
+  local i pick side_zh
   if [[ "${n}" -eq 0 ]]; then
-    print_warn "未发现 WujiHand2。请检查网线/同网段/电源后重试。"
     return 1
   fi
   if [[ "${n}" -eq 1 ]]; then
-    print_info "发现 1 台: SN=${SCAN_SNS[0]}  ${SCAN_ADDRS[0]}  (${SCAN_MODELS[0]})"
-    printf '%s' "${SCAN_ADDRS[0]}"
+    side_zh="$(_hand2_side_label_zh "${FILT_SIDES[0]}")"
+    print_info "发现 1 台: SN=${FILT_SNS[0]}  ${FILT_ADDRS[0]}  (${FILT_MODELS[0]}, ${side_zh})"
+    printf '%s' "${FILT_ADDRS[0]}"
     return 0
   fi
-  local i pick
   echo "" >&2
   echo "发现 ${n} 台 Hand2:" >&2
   for ((i = 0; i < n; i++)); do
-    echo "  $((i + 1))) SN=${SCAN_SNS[i]}  ${SCAN_ADDRS[i]}  (${SCAN_MODELS[i]})" >&2
+    side_zh="$(_hand2_side_label_zh "${FILT_SIDES[i]}")"
+    echo "  $((i + 1))) SN=${FILT_SNS[i]}  ${FILT_ADDRS[i]}  (${FILT_MODELS[i]}, ${side_zh})" >&2
   done
   echo "  0) 取消（回到连接方式）" >&2
   read -r -p "请选择设备 [0-${n}]: " pick
   if [[ "${pick}" =~ ^[1-9][0-9]*$ ]] && [[ "${pick}" -ge 1 && "${pick}" -le "${n}" ]]; then
-    printf '%s' "${SCAN_ADDRS[$((pick - 1))]}"
+    printf '%s' "${FILT_ADDRS[$((pick - 1))]}"
     return 0
   fi
   print_warn "已取消扫描选择"
   return 1
+}
+
+# Fill FILT_* from SCAN_* ; if expect_side empty, copy all; else match SN side.
+_wuji_scan_filter_to_filt() {
+  local expect_side="${1:-}"
+  FILT_SNS=()
+  FILT_ADDRS=()
+  FILT_MODELS=()
+  FILT_SIDES=()
+  local i sn side
+  for ((i = 0; i < ${#SCAN_ADDRS[@]}; i++)); do
+    sn="${SCAN_SNS[i]}"
+    side="$(_hand2_side_from_sn "${sn}")"
+    if [[ -z "${expect_side}" || "${side}" == "${expect_side}" ]]; then
+      FILT_SNS+=("${sn}")
+      FILT_ADDRS+=("${SCAN_ADDRS[i]}")
+      FILT_MODELS+=("${SCAN_MODELS[i]}")
+      FILT_SIDES+=("${side}")
+    fi
+  done
+}
+
+# Interactive pick from scan results → stdout address; return 1 on cancel/fail.
+# Optional arg: expect_side=left|right — list only matching SN side (J/K).
+_prompt_pick_scanned_device() {
+  local expect_side="${1:-}"
+  _wuji_scan_fill || {
+    print_warn "扫描工具不可用，请改选手动输入 IP:port 或启动时扫描"
+    return 1
+  }
+  local n_all="${#SCAN_ADDRS[@]}"
+  if [[ "${n_all}" -eq 0 ]]; then
+    print_warn "未发现 WujiHand2。请检查网线/同网段/电源后重试。"
+    return 1
+  fi
+
+  if [[ -z "${expect_side}" ]]; then
+    _wuji_scan_filter_to_filt ""
+    _prompt_pick_from_filt_arrays
+    return $?
+  fi
+
+  _wuji_scan_filter_to_filt "${expect_side}"
+  local n_filt="${#FILT_ADDRS[@]}"
+  local expect_zh other_n=0 i side
+  expect_zh="$(_hand2_side_label_zh "${expect_side}")"
+
+  if [[ "${n_filt}" -gt 0 ]]; then
+    print_info "按 ${expect_zh} 过滤：${n_filt}/${n_all} 台（SN[3] J=左 K=右）"
+    _prompt_pick_from_filt_arrays
+    return $?
+  fi
+
+  for ((i = 0; i < n_all; i++)); do
+    side="$(_hand2_side_from_sn "${SCAN_SNS[i]}")"
+    if [[ "${side}" != "${expect_side}" ]]; then
+      other_n=$((other_n + 1))
+    fi
+  done
+
+  print_warn "未发现${expect_zh} Hand2（网段共 ${n_all} 台，其中其他侧/未知 ${other_n} 台）"
+  local pick
+  echo "  a) 显示全部 Hand2" >&2
+  echo "  0) 取消" >&2
+  read -r -p "请选择 [a/0]: " pick
+  case "${pick}" in
+    a|A)
+      _wuji_scan_filter_to_filt ""
+      _prompt_pick_from_filt_arrays
+      return $?
+      ;;
+    *)
+      print_warn "已取消扫描选择"
+      return 1
+      ;;
+  esac
 }
 
 # Prompt for IP:port on stdout; return 1 on invalid.
@@ -441,9 +640,9 @@ prompt_device_address() {
     echo "" >&2
     echo -e "${BLUE}${side_label} 连接方式:${NC}" >&2
     echo "  1) 检验真机信息后启动（推荐）" >&2
-    echo "     扫描选设备 → 连接读取左右手/在线关节等 → 确认后再 launch。" >&2
+    echo "     扫描并仅列出本侧设备 → 连接读取左右手/在线关节等 → 确认后再 launch。" >&2
     echo "  2) SDK 扫描并选择（不检验）" >&2
-    echo "     启动前扫，列 SN+IP:port；多手/同手性点选。" >&2
+    echo "     启动前扫，按 SN 左右（J=左/K=右）过滤后点选。" >&2
     echo "  3) 启动时自动扫描" >&2
     echo "     不传地址；activate 按左右手匹配。单手或左右各一可用；两只同侧勿用。" >&2
     echo "  4) 手动输入 IP:port" >&2
@@ -458,7 +657,7 @@ prompt_device_address() {
         return 0
         ;;
       1)
-        addr="$(_prompt_pick_scanned_device)" || {
+        addr="$(_prompt_pick_scanned_device "${expect_side}")" || {
           print_warn "扫描失败。可选手动输入地址后检验。"
           addr="$(_prompt_manual_address)" || continue
         }
@@ -470,7 +669,7 @@ prompt_device_address() {
         continue
         ;;
       2)
-        if addr="$(_prompt_pick_scanned_device)"; then
+        if addr="$(_prompt_pick_scanned_device "${expect_side}")"; then
           print_info "将使用 device_address:=${addr}"
           printf '%s' "${addr}"
           return 0
@@ -526,7 +725,126 @@ do_launch_hand() {
     launch_args="${LAUNCH_BASE_ARGS_MOCK} direction:=${direction} hardware:=${hardware} use_rviz:=${use_rviz}"
   fi
 
-  _save_launch_last "${desc}" "${mode_choice}" "${direction}" "${device_address}" "${use_rviz}"
+  _save_launch_last "${desc}" "${mode_choice}" "${direction}" "${device_address}" "${use_rviz}" \
+    "single" "" ""
+
+  print_info "启动: ros2 launch ${launch_file} ${launch_args}"
+  # shellcheck disable=SC2086
+  ros2 launch ${launch_file} ${launch_args}
+}
+
+# Dual-hand connection menu: no launch-time scan. Default = verify (1).
+# Prints non-empty IP:port, or QS_CONN_BACK.
+prompt_device_address_dual_side() {
+  local side_label="$1"
+  local expect_side="${2:-left}"
+  local default_hint=""
+  if [[ "${expect_side}" == "left" && -n "${DEVICE_ADDRESS_LEFT:-}" ]]; then
+    default_hint="${DEVICE_ADDRESS_LEFT}"
+  elif [[ "${expect_side}" == "right" && -n "${DEVICE_ADDRESS_RIGHT:-}" ]]; then
+    default_hint="${DEVICE_ADDRESS_RIGHT}"
+  fi
+  local choice addr=""
+
+  while true; do
+    echo "" >&2
+    echo -e "${BLUE}${side_label} 连接方式（双手须固定地址）:${NC}" >&2
+    echo "  1) 检验真机信息后启动（推荐）" >&2
+    echo "     扫描并仅列出本侧设备 → 连接读取左右手/在线关节等 → 确认后再 launch。" >&2
+    echo "  2) SDK 扫描并选择（不检验）" >&2
+    echo "     启动前扫，按 SN 左右（J=左/K=右）过滤后点选。" >&2
+    echo "  3) 手动输入 IP:port" >&2
+    if [[ -n "${default_hint}" ]]; then
+      echo "     回车可用 hand.local 默认: ${default_hint}" >&2
+    else
+      echo "     已知地址时直连（例 192.168.2.110:7447）。" >&2
+    fi
+    echo "  0) 返回" >&2
+    read -r -p "请输入选项 [0-3] (默认: 1): " choice
+    choice="${choice:-1}"
+
+    case "${choice}" in
+      0)
+        printf '%s' "${QS_CONN_BACK}"
+        return 0
+        ;;
+      1)
+        addr="$(_prompt_pick_scanned_device "${expect_side}")" || {
+          print_warn "扫描失败。可选手动输入地址后检验。"
+          addr="$(_prompt_manual_address)" || continue
+        }
+        if _run_hand2_info_check "${addr}" "${expect_side}"; then
+          print_info "将使用 device_address:=${addr}"
+          printf '%s' "${addr}"
+          return 0
+        fi
+        continue
+        ;;
+      2)
+        if addr="$(_prompt_pick_scanned_device "${expect_side}")"; then
+          print_info "将使用 device_address:=${addr}"
+          printf '%s' "${addr}"
+          return 0
+        fi
+        continue
+        ;;
+      3)
+        echo "" >&2
+        if [[ -n "${default_hint}" ]]; then
+          read -r -p "请输入 IP:port [默认 ${default_hint}]: " addr
+          addr="${addr:-${default_hint}}"
+        else
+          read -r -p "请输入 IP:port: " addr
+        fi
+        addr="$(echo "${addr}" | tr -d '[:space:]')"
+        if [[ -z "${addr}" || "${addr}" != *:* ]]; then
+          print_warn "地址无效，需为 IP:port"
+          continue
+        fi
+        print_info "将使用 device_address:=${addr}"
+        printf '%s' "${addr}"
+        return 0
+        ;;
+      *)
+        print_warn "无效选项"
+        continue
+        ;;
+    esac
+  done
+}
+
+do_launch_hands() {
+  local mode_choice="$1"
+  local addr_left="$2"
+  local addr_right="$3"
+  local use_rviz="$4"
+  local desc="$5"
+
+  ensure_ros_env || exit 1
+  ensure_wuji_sdk_env || {
+    [[ "${mode_choice}" =~ ^[12]$ ]] || exit 1
+    print_warn "仿真模式继续（无需 SDK 运行时库）"
+  }
+
+  local hardware="mock_components"
+  [[ "${mode_choice}" =~ ^[34]$ ]] && hardware="real"
+
+  local launch_file="${LAUNCH_FILE_REAL_DUAL}"
+  local launch_args="${LAUNCH_BASE_ARGS_REAL_DUAL} hardware:=${hardware} use_rviz:=${use_rviz}"
+  if [[ "${hardware}" == "real" ]]; then
+    if [[ -z "${addr_left}" || -z "${addr_right}" ]]; then
+      print_error "双手真机需要左右 device_address"
+      return 1
+    fi
+    if [[ "${addr_left}" == "${addr_right}" ]]; then
+      print_error "左右地址相同（${addr_left}），请选两台不同设备"
+      return 1
+    fi
+    launch_args+=" device_address_left:=${addr_left} device_address_right:=${addr_right}"
+  fi
+
+  _save_launch_last "${desc}" "${mode_choice}" "both" "" "${use_rviz}" \
+    "dual" "${addr_left}" "${addr_right}"
 
   print_info "启动: ros2 launch ${launch_file} ${launch_args}"
   # shellcheck disable=SC2086
@@ -538,40 +856,104 @@ do_launch_flow() {
   _load_launch_last
 
   local choice
+  local has_sim=0 has_real=0
+  [[ -n "${LAST_SIM_MODE:-}" ]] && has_sim=1
+  [[ -n "${LAST_REAL_MODE:-}" ]] && has_real=1
+
   echo ""
   echo "请选择启动项:"
-  if [[ -n "${LAST_REAL_MODE:-}" ]]; then
-    echo "  1) 使用上次真机 — $(_format_real_last_label)"
-    echo "     （一键；建议新手上机先走「左手/右手 → 真机 → 检验信息」）"
-    echo "  2) 左手 Hand2"
-    echo "  3) 右手 Hand2"
-    echo "  0) 返回"
-    read -r -p "请输入选项 [0-3]: " choice
-    case "${choice}" in
-      1)
-        do_launch_hand "${LAST_REAL_MODE}" "${LAST_REAL_DIRECTION}" \
-          "${LAST_REAL_DEVICE_ADDRESS}" "${LAST_REAL_USE_RVIZ}" "${LAST_REAL_DESC}"
-        return
+  local n=1
+  local opt_sim="" opt_real=""
+  if [[ "${has_sim}" -eq 1 ]]; then
+    opt_sim="${n}"
+    echo "  ${n}) 使用上次仿真 — $(_format_sim_last_label)"
+    n=$((n + 1))
+  fi
+  if [[ "${has_real}" -eq 1 ]]; then
+    opt_real="${n}"
+    echo "  ${n}) 使用上次真机 — $(_format_real_last_label)"
+    echo "     （一键；真机建议先「检验信息」；扫描列表已按左右过滤）"
+    n=$((n + 1))
+  fi
+  local opt_left="${n}"
+  echo "  ${n}) 左手 Hand2"
+  n=$((n + 1))
+  local opt_right="${n}"
+  echo "  ${n}) 右手 Hand2"
+  n=$((n + 1))
+  local opt_dual="${n}"
+  echo "  ${n}) 双手 Hand2"
+  echo "  0) 返回"
+  read -r -p "请输入选项 [0-$((n))]: " choice
+
+  case "${choice}" in
+    0|"") echo "返回"; return ;;
+    "${opt_sim}")
+      _replay_last_sim
+      return
+      ;;
+    "${opt_real}")
+      _replay_last_real
+      return
+      ;;
+    "${opt_left}") choice="left" ;;
+    "${opt_right}") choice="right" ;;
+    "${opt_dual}") choice="dual" ;;
+    *) print_warn "无效选项"; return ;;
+  esac
+
+  local mode_choice use_rviz desc
+  mode_choice="$(launch_mode_menu)"
+  [[ "${mode_choice}" == "0" || -z "${mode_choice}" ]] && { echo "返回"; return; }
+
+  if [[ "${choice}" == "dual" ]]; then
+    local addr_left="" addr_right=""
+    use_rviz="true"
+    case "${mode_choice}" in
+      1) desc="双手 Hand2 仿真" ;;
+      2) desc="双手 Hand2 仿真 headless"; use_rviz="false" ;;
+      3)
+        desc="双手 Hand2 真机"
+        addr_left="$(prompt_device_address_dual_side "左手" "left")"
+        if [[ "${addr_left}" == "${QS_CONN_BACK}" ]]; then
+          echo "返回"
+          return
+        fi
+        addr_right="$(prompt_device_address_dual_side "右手" "right")"
+        if [[ "${addr_right}" == "${QS_CONN_BACK}" ]]; then
+          echo "返回"
+          return
+        fi
+        if [[ "${addr_left}" == "${addr_right}" ]]; then
+          print_error "左右地址相同，请重新选择"
+          return
+        fi
         ;;
-      2) choice="left" ;;
-      3) choice="right" ;;
-      0|"") echo "返回"; return ;;
+      4)
+        desc="双手 Hand2 真机 headless"
+        use_rviz="false"
+        addr_left="$(prompt_device_address_dual_side "左手" "left")"
+        if [[ "${addr_left}" == "${QS_CONN_BACK}" ]]; then
+          echo "返回"
+          return
+        fi
+        addr_right="$(prompt_device_address_dual_side "右手" "right")"
+        if [[ "${addr_right}" == "${QS_CONN_BACK}" ]]; then
+          echo "返回"
+          return
+        fi
+        if [[ "${addr_left}" == "${addr_right}" ]]; then
+          print_error "左右地址相同，请重新选择"
+          return
+        fi
+        ;;
       *) print_warn "无效选项"; return ;;
     esac
-  else
-    echo "  1) 左手 Hand2"
-    echo "  2) 右手 Hand2"
-    echo "  0) 返回"
-    read -r -p "请输入选项 [0-2]: " choice
-    case "${choice}" in
-      1) choice="left" ;;
-      2) choice="right" ;;
-      0|"") echo "返回"; return ;;
-      *) print_warn "无效选项"; return ;;
-    esac
+    do_launch_hands "${mode_choice}" "${addr_left}" "${addr_right}" "${use_rviz}" "${desc}"
+    return
   fi
 
-  local direction side_label expect_side device_address mode_choice use_rviz desc
+  local direction side_label expect_side device_address
   if [[ "${choice}" == "left" ]]; then
     direction="1"
     side_label="左手"
@@ -581,9 +963,6 @@ do_launch_flow() {
     side_label="右手"
     expect_side="right"
   fi
-
-  mode_choice="$(launch_mode_menu)"
-  [[ "${mode_choice}" == "0" || -z "${mode_choice}" ]] && { echo "返回"; return; }
 
   device_address=""
   use_rviz="true"

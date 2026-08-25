@@ -119,12 +119,12 @@ export WUJI_SDK_ROOT=/path/to/wuji-sdk-c-*-linux-gnu   # 可选
 ```bash
 ./quick_start.sh
 # 1) 编译 — 仿真或真机包列表见 config/quick_start.conf
-# 2) 启动 — 左/右手、mock 或 real
+# 2) 启动 — 左手 / 右手 / 双手、mock 或 real
 ```
 
 ### 设备连接（真机）
 
-**不必写死 `device_address`。** 优先级：
+**单手**不必写死 `device_address`。优先级：
 
 1. `device_address:=IP:port` — 直连（双手同网、产线推荐）
 2. `serial_number:=SN` — 按序列号（`device_address` 为空时）
@@ -141,17 +141,23 @@ ros2 launch wujihand2_ros2_control hand2.launch.py \
 # 按序列号
 ros2 launch wujihand2_ros2_control hand2.launch.py \
   hardware:=real direction:=1 serial_number:=YOUR_SN
+
+# 双手（须左右地址；一左一右）
+ros2 launch wujihand2_ros2_control hands2.launch.py hardware:=real \
+  device_address_left:=192.168.1.110:50001 \
+  device_address_right:=192.168.1.111:50001
 ```
 
 `quick_start.sh` 真机连接：
 
-- **启动项「使用上次真机」** — 记住左右手 + IP（`LAST_REAL_*`，仿真不会覆盖；一键不强制检验）
-- **连接方式**
-  1. **检验真机信息后启动（推荐）** — 扫描选设备 → 读左右手/在线关节等 → 确认后再 launch
-  2. SDK 扫描并选择（不检验）
+- **启动项「使用上次真机」** — 记住单手或双手上次地址（`LAST_REAL_*`，仿真不会覆盖）
+- **单手连接方式**
+  1. **检验真机信息后启动（推荐）** — 扫描并仅列出本侧设备 → 读左右手/在线关节等 → 确认后再 launch
+  2. SDK 扫描并选择（不检验）— 同上，按 SN 左右（J=左/K=右）过滤
   3. 启动时自动扫描 — 不传地址，activate 按左右手匹配
   4. 手动输入 IP:port — 已知固定地址
   0. 返回
+- **双手连接方式** — 左右各选一次：检验 / 扫描选择 / 手动输入（**无**启动时自动扫描；两地址不得相同；扫描按侧过滤）
 
 部分设备上报端口为 `:7447` 而非文档默认 `:50001`，优先用扫描 / 检验流程。
 
