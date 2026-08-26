@@ -32,13 +32,13 @@ DRAG_GRIPPER_KP=0.001
 DRAG_GRIPPER_KD=0.01
 
 # 真机控制模式映射（菜单选项 → xacro_control_mode）
-# 1) full_control   — OCS2 MIX（位置+速度+力矩+kp/kd）
-# 2) pd_control     — 位置+力矩，kp/kd
-# 3) position_velocity — 位置+速度+最大力矩
+# 1) mit      — 位置+速度+力矩+kp/kd（kp/kd 可为 0）
+# 2) effort   — 纯力矩（直接下发控制器 effort 命令）
+# 3) position — 纯位置
 declare -A CONTROL_MODES=(
-  [1]="full_control"
-  [2]="pd_control"
-  [3]="position_velocity"
+  [1]="mit"
+  [2]="effort"
+  [3]="position"
 )
 
 # ===================== 核心包由 deb 提供时，src 下无 arms_ros2_control / ocs2_ros2 等 =====================
@@ -275,9 +275,9 @@ launch_mode_menu() {
 control_mode_menu() {
   echo "" >&2
   echo "请选择真机控制模式:" >&2
-  echo " *1) full_control   — OCS2 MIX（位置+速度+力矩+kp/kd）" >&2
-  echo "  2) pd_control     — 位置+力矩，kp/kd" >&2
-  echo "  3) position_velocity — 位置+速度+最大力矩" >&2
+  echo " *1) mit      — 位置+速度+力矩+kp/kd（kp/kd 可为 0）" >&2
+  echo "  2) effort   — 纯力矩（直接下发控制器 effort 命令）" >&2
+  echo "  3) position — 纯位置" >&2
   echo "  0) 返回" >&2
   echo "" >&2
   read -r -p "请输入选项 [0-3]（回车=默认 1）: " choice

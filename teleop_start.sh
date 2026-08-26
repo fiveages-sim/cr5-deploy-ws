@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 
 # 遥操作启动脚本（Panthera HT Deploy Workspace）
-# - 启动遥操作链路：drag_teleop_controller（后台）+ teleop_joint_mapper（前台）
-# - 含两个记忆启动项、编译、启动选择（真机/仿真）
-# - 真机：力反馈(y/N 默认关) → 控制盒(默认自动) → 配置文件
-# - 仿真：配置文件
-# - 配置文件来自 src/teleop-joint-mapper/config，默认 joint_mapper.yaml
+# - 主菜单：两次启动历史记忆 / 编译 / 启动
+# - 编译：真机包（含 ht-ros2-control）与仿真包两组，缺失的源码目录自动跳过
+# - 启动流程：master/slave → 真机/仿真 → 控制模式 → （master）力反馈 → USB 口 → 配置文件
+#   * 控制模式：mit（slave 默认）/ effort（master 默认）/ position（仅 slave）
+#     高擎机械臂真机：控制模式同时透传 hardware_control_mode；
+#     master 额外设置 hardware_gripper_kp/kd:=0；仿真不传任何 hardware 参数
+#   * 力反馈（仅 master）：*none / position / effort
+#   * USB 口：仅 1 个控制盒时默认 auto；多个时第一个为默认
 # - 默认选项前加 '*' 标识
 
 set -u
@@ -28,17 +31,9 @@ HIST_MAX=2
 DRAG_LAUNCH_PKG="drag_teleop_controller"
 DRAG_LAUNCH_FILE="drag_teleop_controller.launch.py"
 
-# teleop_joint_mapper 启动包 / launch 文件
-MAPPER_LAUNCH_PKG="teleop_joint_mapper"
-MAPPER_LAUNCH_FILE="teleop_joint_mapper.launch.py"
-
 # 机器人 / 臂组合
 ROBOT_NAME="panthera_ht"
 ARM_TYPE="dual"
-
-# 遥操作配置文件目录与默认配置
-CONFIG_DIR="${WS_DIR}/src/teleop-joint-mapper/config"
-DEFAULT_CONFIG="joint_mapper.yaml"
 
 # drag 固定启动参数
 USE_SIM_TIME="false"
@@ -48,8 +43,11 @@ RViz="false"
 # 关节 kp/kd 为数组，每臂 6 值，dual 时 xacro 自动拼接为 12 值）
 HARDWARE_JOINT_KP=(0.01 0.01 0.01 0.01 0.01 0.01)
 HARDWARE_JOINT_KD=(0.1 0.1 0.1 0.1 0.1 0.1)
-HARDWARE_GRIPPER_KP=0.001
-HARDWARE_GRIPPER_KD=0.01
+
+# 编译目标源码目录（真机多 ht-ros2-control；arms_ros2_control / ocs2_ros2 存在才编译）
+BUILD_PKGS_BASE=(drag_teleop_controller robot-descriptions-ht)
+BUILD_DIRS_OPTIONAL=(arms_ros2_control ocs2_ros2)
+BUILD_DIR_REAL_ONLY=(ht-ros2-control)
 
 # ===================== 环境 =====================
 
@@ -136,28 +134,31 @@ if idx < len(d):
 PYEOF
 }
 
-# 记录一次遥操作启动配置 (按 hardware/feedback/usb_select/config_file 去重,
+# 记录一次遥操作启动配置 (按 role/hardware/mode/feedback/moveJ_pub/usb_select 去重,
 # 保留最近 HIST_MAX 条不同配置；其他 kind 条目原样保留)
 record_teleop_launch() {
-  python3 - "${HIST_FILE}" "${HIST_KIND}" "$1" "$2" "$3" "$4" "${HIST_MAX}" <<'PYEOF'
+  # $1=role $2=hardware $3=mode $4=feedback $5=moveJ_pub $6=usb_select
+  python3 - "${HIST_FILE}" "${HIST_KIND}" "$1" "$2" "$3" "$4" "$5" "$6" "${HIST_MAX}" <<'PYEOF'
 import json, os, sys, time
-path, kind, jhw, jfb, jusb, jconfig, hist_max = sys.argv[1:8]
+path, kind, role, jhw, mode, fb, jmj, jusb, hist_max = sys.argv[1:10]
 hist_max = int(hist_max)
-fb = (jfb == "true")
 entry = {
     "kind": kind,
+    "role": role,
     "hardware": jhw,
+    "mode": mode,
     "feedback": fb,
+    "moveJ_pub": jmj,
     "usb_select": jusb,
-    "config_file": jconfig,
     "ts": int(time.time()),
 }
-parts = ["真机" if jhw == "real" else "仿真"]
-if fb:
-    parts.append("力反馈")
+parts = ["真机" if jhw == "real" else "仿真", role, mode]
+if role == "master":
+    parts.append(f"反馈:{fb}")
+    if jmj == "true":
+        parts.append("ocs2发布")
 if jusb and jusb != "auto":
     parts.append(f"盒:{jusb}")
-parts.append(os.path.basename(jconfig))
 entry["desc"] = " · ".join(parts)
 try:
     with open(path) as f:
@@ -168,10 +169,12 @@ except Exception:
     data = []
 
 def same(e):
-    return (e.get("hardware") == entry["hardware"]
-            and bool(e.get("feedback", False)) == fb
-            and e.get("usb_select", "auto") == jusb
-            and e.get("config_file", "") == jconfig)
+    return (e.get("role") == role
+            and e.get("hardware") == jhw
+            and e.get("mode") == mode
+            and e.get("feedback", "none") == fb
+            and e.get("moveJ_pub", "false") == jmj
+            and e.get("usb_select", "auto") == jusb)
 
 mine = [e for e in data if e.get("kind") == kind]
 other = [e for e in data if e.get("kind") != kind]
@@ -188,8 +191,8 @@ PYEOF
 # 重现一条历史遥操作启动配置 (idx: 0=最近, 1=次近)
 run_teleop_history_launch() {
   local idx="$1"
-  local jhw jfb jusb jconfig
-  IFS=',' read -r jhw jfb jusb jconfig <<EOF
+  local jrole jhw jmode jfb jjmj jusb
+  IFS=',' read -r jrole jhw jmode jfb jjmj jusb <<EOF
 $(python3 - "${HIST_FILE}" "${HIST_KIND}" "${idx}" <<'PYEOF'
 import json, sys
 path, kind, idx = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -201,21 +204,23 @@ if not isinstance(d, list):
     d = []
 d = [e for e in d if e.get("kind") == kind]
 if idx >= len(d):
-    print("mock_components,false,auto,")
+    print("master,mock_components,mit,none,false,auto")
     sys.exit(0)
 e = d[idx]
 print(",".join([
+    e.get("role", "master"),
     e.get("hardware", "mock_components"),
-    "true" if e.get("feedback") else "false",
+    e.get("mode", "mit"),
+    e.get("feedback", "none"),
+    e.get("moveJ_pub", "false"),
     e.get("usb_select", "auto"),
-    e.get("config_file", ""),
 ]))
 PYEOF
 )
 EOF
   local label
   label="$(teleop_hist_desc_at "${idx}")"
-  _run_teleop "${jhw}" "${jfb}" "${jusb}" "${jconfig}" "${label}"
+  _run_teleop "${jrole}" "${jhw}" "${jmode}" "${jfb}" "${jjmj}" "${jusb}" "${label}"
 }
 
 # ===================== 真机串口 / 控制盒 =====================
@@ -280,25 +285,50 @@ detect_usb_boxes() {
   shopt -u nullglob
 }
 
-# 询问选择控制盒（多套机械臂同机时）；echo "auto" 或 USB 路径，或 "back"
+# 询问选择控制盒（多套机械臂同机时）
+# 仅 1 个控制盒时默认 auto；多个时第一个为默认。echo USB 路径/"auto"，或 "back"
 ask_usb_select() {
-  local boxes=() paths=() i=1 choice
+  local -a lines=() paths=()
+  local i=1 choice default_choice line path dev
+  while IFS= read -r line; do
+    lines+=("${line}")
+  done < <(detect_usb_boxes)
+
   echo "" >&2
   echo "请选择控制盒 (USB 设备):" >&2
-  echo " *0) 自动检测（仅 1 个控制盒时自动连接；多个时启动会报错并列出路径）" >&2
-  while IFS='|' read -r path dev; do
-    paths+=("${path}")
-    echo "  ${i}) ${path}   (样例口: ${dev})" >&2
-    i=$((i + 1))
-  done < <(detect_usb_boxes)
-  if [ "${i}" -eq 1 ]; then
+  if [ "${#lines[@]}" -le 1 ]; then
+    # 0 或 1 个控制盒：auto 为默认
+    echo " *0) 自动检测（仅 1 个控制盒时自动连接；多个时启动会报错并列出路径）" >&2
+    default_choice="0"
+    for line in "${lines[@]}"; do
+      IFS='|' read -r path dev <<<"${line}"
+      paths+=("${path}")
+      echo "  ${i}) ${path}   (样例口: ${dev})" >&2
+      i=$((i + 1))
+    done
+  else
+    # 多个控制盒：第一个为默认
+    for line in "${lines[@]}"; do
+      IFS='|' read -r path dev <<<"${line}"
+      paths+=("${path}")
+      if [ "${i}" -eq 1 ]; then
+        echo " *${i}) ${path}   (样例口: ${dev})" >&2
+      else
+        echo "  ${i}) ${path}   (样例口: ${dev})" >&2
+      fi
+      i=$((i + 1))
+    done
+    echo "  0) 自动检测" >&2
+    default_choice="1"
+  fi
+  if [ "${#paths[@]}" -eq 0 ] && [ "${default_choice}" != "0" ]; then
     echo "  （当前未检测到 /dev/ttyACM*，请检查 USB 连接与供电）" >&2
   fi
   echo "  q) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [0-$((${#paths[@]}))]（回车=默认 0）: " choice
+  read -r -p "请输入选项 [0-${#paths[@]}]（回车=默认 ${default_choice}）: " choice
   if [ -z "${choice}" ]; then
-    choice="0"
+    choice="${default_choice}"
   fi
   case "${choice}" in
     0) echo "auto" ;;
@@ -314,76 +344,132 @@ ask_usb_select() {
   esac
 }
 
-# ===================== 力反馈 / 配置文件 =====================
+# ===================== 角色 / 真机仿真 / 控制模式 / 力反馈 =====================
 
-# 询问是否开启力反馈（从臂碰撞回推主臂）；echo "true"/"false"（默认关）
-ask_feedback() {
-  local yn
-  read -r -p "开启力反馈（从臂碰撞回推主臂）? [y/N]: " yn
-  case "${yn}" in
-    y|Y|yes|YES) echo "true" ;;
-    *) echo "false" ;;
+# 选择启动角色；echo "master"/"slave"（默认 master）
+ask_role() {
+  local choice
+  echo "" >&2
+  echo "请选择启动角色:" >&2
+  echo " *1) master（主臂：操作者拖动，重力补偿）" >&2
+  echo "  2) slave（从臂：跟随主臂）" >&2
+  echo "  q) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [1-2]（回车=默认 1）: " choice
+  if [ -z "${choice}" ]; then
+    choice="1"
+  fi
+  case "${choice}" in
+    2) echo "slave" ;;
+    q|Q) echo "back" ;;
+    *) echo "master" ;;
   esac
 }
 
-# 列出 config 目录下所有 yaml 配置文件（仅文件名）
-list_config_files() {
-  shopt -s nullglob
-  local f
-  for f in "${CONFIG_DIR}"/*.yaml; do
-    echo "$(basename "${f}")"
-  done
-  shopt -u nullglob
+# 选择真机 / 仿真；echo "real"/"mock_components"（默认真机）
+ask_hw_target() {
+  local choice
+  echo "" >&2
+  echo "请选择启动目标:" >&2
+  echo " *1) 真机" >&2
+  echo "  2) 仿真" >&2
+  echo "  q) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [1-2]（回车=默认 1）: " choice
+  if [ -z "${choice}" ]; then
+    choice="1"
+  fi
+  case "${choice}" in
+    2) echo "mock_components" ;;
+    q|Q) echo "back" ;;
+    *) echo "real" ;;
+  esac
 }
 
-# 选择配置文件；echo 绝对路径，或 "back"（默认 DEFAULT_CONFIG）
-ask_config_file() {
-  local -a files=()
-  local i=1 choice default_idx=1 f
-  echo "" >&2
-  echo "请选择遥操作配置文件:" >&2
-  while IFS= read -r f; do
-    files+=("${f}")
-    if [ "${f}" = "${DEFAULT_CONFIG}" ]; then
-      default_idx="${i}"
-      echo " *${i}) ${f}" >&2
-    else
-      echo "  ${i}) ${f}" >&2
-    fi
-    i=$((i + 1))
-  done < <(list_config_files)
-  if [ "${#files[@]}" -eq 0 ]; then
-    echo -e "${RED}[ERROR] 未找到配置文件: ${CONFIG_DIR}${NC}" >&2
-    echo "back"
-    return
+# 选择控制模式；$1 = role。
+# master: mit / *effort；slave: *mit / effort / position。echo 模式名或 "back"
+ask_mode() {
+  local role="$1" choice default_idx max_idx
+  if [ "${role}" = "master" ]; then
+    default_idx=2; max_idx=2
+    echo "" >&2
+    echo "请选择控制模式:" >&2
+    echo "  1) mit" >&2
+    echo " *2) effort" >&2
+  else
+    default_idx=1; max_idx=3
+    echo "" >&2
+    echo "请选择控制模式:" >&2
+    echo " *1) mit" >&2
+    echo "  2) effort" >&2
+    echo "  3) position" >&2
   fi
   echo "  q) 返回" >&2
   echo "" >&2
-  read -r -p "请输入选项 [1-${#files[@]}]（回车=默认 ${DEFAULT_CONFIG}）: " choice
+  read -r -p "请输入选项 [1-${max_idx}]（回车=默认 ${default_idx}）: " choice
   if [ -z "${choice}" ]; then
     choice="${default_idx}"
   fi
   case "${choice}" in
     q|Q) echo "back" ;;
+    1) echo "mit" ;;
+    2) echo "effort" ;;
+    3) echo "position" ;;
     *)
-      if [[ "${choice}" =~ ^[0-9]+$ ]] && [ "${choice}" -ge 1 ] && [ "${choice}" -le "${#files[@]}" ]; then
-        echo "${CONFIG_DIR}/${files[$((choice - 1))]}"
-      else
-        echo -e "${YELLOW}无效选项，使用默认 ${DEFAULT_CONFIG}${NC}" >&2
-        echo "${CONFIG_DIR}/${DEFAULT_CONFIG}"
-      fi
+      echo -e "${YELLOW}无效选项，使用默认${NC}" >&2
+      [ "${role}" = "master" ] && echo "effort" || echo "mit"
       ;;
   esac
 }
 
+# 选择力反馈类型（仅 master）；echo "none"/"position"/"effort"（默认 none）
+ask_feedback() {
+  local choice
+  echo "" >&2
+  echo "请选择力反馈类型（从臂碰撞回推主臂）:" >&2
+  echo " *1) none（关闭）" >&2
+  echo "  2) position（基于位置误差）" >&2
+  echo "  3) effort（基于外部力矩）" >&2
+  echo "  q) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [1-3]（回车=默认 1）: " choice
+  if [ -z "${choice}" ]; then
+    choice="1"
+  fi
+  case "${choice}" in
+    2) echo "position" ;;
+    3) echo "effort" ;;
+    q|Q) echo "back" ;;
+    *) echo "none" ;;
+  esac
+}
+
+# 选择是否发布 ocs2 命令（仅 master）；echo "true"/"false"（默认 false）
+ask_movej_pub() {
+  local choice
+  echo "" >&2
+  echo "是否发布 ocs2 命令（moveJ + 夹爪位置命令）:" >&2
+  echo " *1) 不发布" >&2
+  echo "  2) 发布 (moveJ_pub:=true)" >&2
+  echo "  q) 返回" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [1-2]（回车=默认 1）: " choice
+  if [ -z "${choice}" ]; then
+    choice="1"
+  fi
+  case "${choice}" in
+    2) echo "true" ;;
+    q|Q) echo "back" ;;
+    *) echo "false" ;;
+  esac
+}
+
 # ===================== 启动编排 =====================
-# drag_teleop_controller 后台 + teleop_joint_mapper 前台；
-# mapper 结束（Ctrl+C）后 trap 清理后台 drag。
-# 参数: hardware feedback usb_select config_file label
+# 仅启动 drag_teleop_controller（前台），Ctrl+C 结束。
+# 参数: role hardware mode feedback moveJ_pub usb_select label
 _run_teleop() {
-  local jhw="$1" jfb="$2" jusb="$3" jconfig="$4" label="$5"
+  local jrole="$1" jhw="$2" jmode="$3" jfb="$4" jjmj="$5" jusb="$6" label="$7"
   local -a drag_args=()
-  local drag_pid=""
 
   ensure_ros_env || exit 1
 
@@ -393,42 +479,41 @@ _run_teleop() {
   fi
 
   # 记录历史
-  record_teleop_launch "${jhw}" "${jfb}" "${jusb}" "${jconfig}"
+  record_teleop_launch "${jrole}" "${jhw}" "${jmode}" "${jfb}" "${jjmj}" "${jusb}"
 
   # 组装 drag 启动参数
-  drag_args+=("robot:=${ROBOT_NAME}" "type:=${ARM_TYPE}" "hardware:=${jhw}")
-  drag_args+=("use_sim_time:=${USE_SIM_TIME}" "rviz:=${RViz}" "feedback:=${jfb}")
+  drag_args+=("robot:=${ROBOT_NAME}" "type:=${ARM_TYPE}" "role:=${jrole}")
+  drag_args+=("hardware:=${jhw}")
+  drag_args+=("use_sim_time:=${USE_SIM_TIME}" "rviz:=${RViz}")
+  drag_args+=("mode:=${jmode}")
+  if [ "${jrole}" = "master" ]; then
+    # none → false（控制器 feedback 参数取值 false|position|effort）
+    local fb="${jfb}"
+    [ "${fb}" = "none" ] && fb="false"
+    drag_args+=("feedback:=${fb}")
+    drag_args+=("moveJ_pub:=${jjmj}")
+  fi
   if [ "${jhw}" = "real" ]; then
     # 真机：透传低刚度 kp/kd（hardware_ 前缀，xacro 展开进 URDF <param>）
     local kp kd
     kp="$(IFS=', '; echo "${HARDWARE_JOINT_KP[*]}")"
     kd="$(IFS=', '; echo "${HARDWARE_JOINT_KD[*]}")"
     drag_args+=("hardware_joint_kp:=${kp}" "hardware_joint_kd:=${kd}")
-    drag_args+=("hardware_gripper_kp:=${HARDWARE_GRIPPER_KP}" "hardware_gripper_kd:=${HARDWARE_GRIPPER_KD}")
+    # 高擎机械臂：控制模式同步到硬件（mit/effort/position）
+    drag_args+=("hardware_control_mode:=${jmode}")
+    if [ "${jrole}" = "master" ]; then
+      # 主臂：夹爪增益清零（避免位置环对抗拖动）
+      drag_args+=("hardware_gripper_kp:=0" "hardware_gripper_kd:=0")
+    fi
     if [ "${jusb}" != "auto" ]; then
       drag_args+=("xacro_usb_select:=${jusb}")
     fi
   fi
 
-  # 后台启动 drag
-  echo -e "${GREEN}启动 ${label}：drag_teleop_controller（后台）...${NC}"
+  # 前台启动 drag（Ctrl+C 结束）
+  echo -e "${GREEN}启动 ${label}：drag_teleop_controller ...${NC}"
   echo -e "${BLUE}  ${DRAG_LAUNCH_PKG}/${DRAG_LAUNCH_FILE} ${drag_args[*]}${NC}"
-  ros2 launch "${DRAG_LAUNCH_PKG}" "${DRAG_LAUNCH_FILE}" "${drag_args[@]}" &
-  drag_pid=$!
-
-  # 前台启动 mapper
-  echo -e "${GREEN}启动 teleop_joint_mapper（前台，Ctrl+C 结束）...${NC}"
-  echo -e "${BLUE}  配置文件: ${jconfig}${NC}"
-  ros2 launch "${MAPPER_LAUNCH_PKG}" "${MAPPER_LAUNCH_FILE}" "config_file:=${jconfig}"
-  local mapper_rc=$?
-
-  # mapper 结束后清理后台 drag
-  if [ -n "${drag_pid}" ] && kill -0 "${drag_pid}" 2>/dev/null; then
-    echo -e "${YELLOW}[INFO] 遥操作结束，清理后台 drag_teleop_controller (pid ${drag_pid})${NC}"
-    kill "${drag_pid}" 2>/dev/null
-    wait "${drag_pid}" 2>/dev/null
-  fi
-  return "${mapper_rc}"
+  ros2 launch "${DRAG_LAUNCH_PKG}" "${DRAG_LAUNCH_FILE}" "${drag_args[@]}"
 }
 
 # ===================== 菜单 =====================
@@ -466,18 +551,10 @@ menu() {
 build_menu() {
   echo "" >&2
   echo "请选择编译目标:" >&2
-  echo "  1) 编译遥操作包 (teleop_joint_mapper + drag_teleop_controller)" >&2
-  echo "  0) 返回" >&2
-  echo "" >&2
-  read -r -p "请输入选项 [0-1]: " choice
-  echo "${choice}"
-}
-
-launch_menu() {
-  echo "" >&2
-  echo "请选择启动项:" >&2
-  echo " *1) 真机启动" >&2
-  echo "  2) 仿真启动" >&2
+  echo " *1) 编译真机包 (drag_teleop_controller + robot-descriptions-ht" >&2
+  echo "     + ht-ros2-control + arms_ros2_control/ocs2_ros2 若存在)" >&2
+  echo "  2) 编译仿真包 (drag_teleop_controller + robot-descriptions-ht" >&2
+  echo "     + arms_ros2_control/ocs2_ros2 若存在)" >&2
   echo "  0) 返回" >&2
   echo "" >&2
   read -r -p "请输入选项 [0-2]（回车=默认 1）: " choice
@@ -485,6 +562,50 @@ launch_menu() {
     choice="1"
   fi
   echo "${choice}"
+}
+
+# 收集目录下全部 colcon 包名（存在 package.xml 才算；每行一个）
+collect_pkgs() {
+  local dir="$1"
+  [ -d "${dir}" ] || return 0
+  find "${dir}" -name package.xml 2>/dev/null | while read -r f; do
+    sed -n 's/.*<name>\([^<]*\)<\/name>.*/\1/p' "${f}" | head -1
+  done
+}
+
+# 编译目标包：$1 = real | sim
+do_build() {
+  local target="$1"
+  local -a pkgs=() arr=()
+  local d
+
+  # 基础包（源码目录名，colcon 按 --paths 不支持 select，这里转成包名）
+  for d in "${BUILD_PKGS_BASE[@]}"; do
+    mapfile -t arr < <(collect_pkgs "${WS_DIR}/src/${d}")
+    pkgs+=("${arr[@]}")
+  done
+  # 可选目录（存在才编译）
+  for d in "${BUILD_DIRS_OPTIONAL[@]}"; do
+    mapfile -t arr < <(collect_pkgs "${WS_DIR}/src/${d}")
+    pkgs+=("${arr[@]}")
+  done
+  # 真机专属驱动
+  if [ "${target}" = "real" ]; then
+    for d in "${BUILD_DIR_REAL_ONLY[@]}"; do
+      mapfile -t arr < <(collect_pkgs "${WS_DIR}/src/${d}")
+      pkgs+=("${arr[@]}")
+    done
+  fi
+
+  if [ "${#pkgs[@]}" -eq 0 ]; then
+    echo -e "${RED}[ERROR] 未找到可编译的包${NC}"
+    return 1
+  fi
+
+  cd "${WS_DIR}" || return 1
+  source_ros_underlay
+  echo -e "${BLUE}  编译包: ${pkgs[*]}${NC}"
+  colcon build --packages-select "${pkgs[@]}" --symlink-install
 }
 
 # ===================== 主流程 =====================
@@ -510,9 +631,13 @@ fi
 if [ "${top_choice}" = "$((HIST_COUNT + 1))" ]; then
   build_choice="$(build_menu)"
   case "${build_choice}" in
-    1)
-      echo -e "${GREEN}开始编译遥操作包...${NC}"
-      if ! run_colcon_build --packages-select teleop_joint_mapper drag_teleop_controller --symlink-install; then
+    1|2)
+      if [ "${build_choice}" = "1" ]; then
+        echo -e "${GREEN}开始编译真机所需包...${NC}"
+      else
+        echo -e "${GREEN}开始编译仿真所需包...${NC}"
+      fi
+      if ! do_build "$([ "${build_choice}" = "1" ] && echo real || echo sim)"; then
         echo -e "${YELLOW}编译过程中出现错误${NC}"
         exit 1
       fi
@@ -531,40 +656,56 @@ if [ "${top_choice}" = "$((HIST_COUNT + 1))" ]; then
 fi
 
 if [ "${top_choice}" = "$((HIST_COUNT + 2))" ]; then
-  launch_choice="$(launch_menu)"
-  case "${launch_choice}" in
-    1)
-      # 真机：力反馈 → 控制盒 → 配置文件
-      fb="$(ask_feedback)"
-      usb="$(ask_usb_select)"
-      if [ "${usb}" = "back" ]; then
-        echo "返回"
-      else
-        cfg="$(ask_config_file)"
-        if [ "${cfg}" = "back" ]; then
-          echo "返回"
-        else
-          _run_teleop "real" "${fb}" "${usb}" "${cfg}" "真机遥操作"
-        fi
-      fi
-      ;;
-    2)
-      # 仿真：配置文件（无力反馈/控制盒）
-      cfg="$(ask_config_file)"
-      if [ "${cfg}" = "back" ]; then
-        echo "返回"
-      else
-        _run_teleop "mock_components" "false" "auto" "${cfg}" "仿真遥操作"
-      fi
-      ;;
-    0)
+  # 启动流程：角色 → 真机/仿真 → 控制模式
+  #   → （master 真机）力反馈 → （master）ocs2 发布 → （真机）USB 口
+  role="$(ask_role)"
+  if [ "${role}" = "back" ]; then
+    echo "返回"
+    exit 0
+  fi
+
+  hw="$(ask_hw_target)"
+  if [ "${hw}" = "back" ]; then
+    echo "返回"
+    exit 0
+  fi
+
+  mode="$(ask_mode "${role}")"
+  if [ "${mode}" = "back" ]; then
+    echo "返回"
+    exit 0
+  fi
+
+  fb="none"
+  if [ "${role}" = "master" ] && [ "${hw}" = "real" ]; then
+    # 力反馈仅 master + 真机（仿真无力反馈）
+    fb="$(ask_feedback)"
+    if [ "${fb}" = "back" ]; then
       echo "返回"
-      ;;
-    *)
-      echo -e "${YELLOW}无效选项${NC}"
-      exit 1
-      ;;
-  esac
+      exit 0
+    fi
+  fi
+
+  mj="false"
+  if [ "${role}" = "master" ]; then
+    mj="$(ask_movej_pub)"
+    if [ "${mj}" = "back" ]; then
+      echo "返回"
+      exit 0
+    fi
+  fi
+
+  usb="auto"
+  if [ "${hw}" = "real" ]; then
+    usb="$(ask_usb_select)"
+    if [ "${usb}" = "back" ]; then
+      echo "返回"
+      exit 0
+    fi
+  fi
+
+  local_label="$([ "${hw}" = "real" ] && echo "真机遥操作(${role})" || echo "仿真遥操作(${role})")"
+  _run_teleop "${role}" "${hw}" "${mode}" "${fb}" "${mj}" "${usb}" "${local_label}"
   exit 0
 fi
 
