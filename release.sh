@@ -3,98 +3,48 @@
 # HighTorque Panthera HT 工作空间 — deb 安装与发布打包脚本
 # 使用方：解压发布 zip → ./release.sh --install → ./quick_start.sh
 #         --package 含 .git（可 git pull）；--package-no-git 为纯快照包（更小）
-# deb 版本与仓库以 deb_versions.conf 为准（非 GitHub Latest）
-# deb 安装顺序: ocs2 → common → arms-ros2-control-full（含 ht_ros2_control）
+#
+# deb 发布通道（下载/安装/打包时选择，默认 conf）：
+#   conf        — 按 deb_versions.conf 固定 tag（固定版本直接拼接下载路径）
+#   latest      — GitHub Latest 稳定版（仅 GitHub API 查询）
+#   pre-release — 各仓库 pre-release 浮动标签（仅 GitHub API 查询）
+# arms 打包固定为 full 变体（含 ht_ros2_control）
+# deb 安装顺序: ocs2 → common → arms-ros2-control-full
+# 打包 zip 中仅保留 src/robot-descriptions-ht 源码，其余子模块只保留目录
+# 打包通道非 conf 时，zip 内 deb_versions.conf 的 tag 改为与打包通道一致
 #
 # 用法:
 #   ./release.sh              # 交互式菜单
-#   ./release.sh --download   # 按 deb_versions.conf 下载/校验 deb 到 .deb_cache/
+#   ./release.sh --download [--channel <conf|latest|pre-release>]
+#                            # 按通道下载/校验 deb 到 .deb_cache/
 #   ./release.sh --install    # 从 .deb_cache/ 安装 deb（需 sudo）
 #   ./release.sh --uninstall  # 按逆序卸载系统中的 deb 包（需 sudo）
-#   ./release.sh --package           # 维护者：打包 zip（含 .git）
-#   ./release.sh --package-no-git    # 维护者：打包 zip（不含 .git，体积更小）
+#   ./release.sh --package [--channel <conf|latest|pre-release>] [--update-submodules]
+#                            # 维护者：打包 zip（含 .git）
+#   ./release.sh --package-no-git --arch <amd64|arm64> [--channel ...]
+#                            # 维护者：打包 zip（不含 .git）
 #   ./release.sh --list       # 维护者：查看 conf 对应 Release deb 信息
 
 set -u
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="${WS_DIR}"
 DEB_CACHE_DIR="${WS_DIR}/.deb_cache"
 DIST_DIR="${WS_DIR}/dist"
 DEB_CONF="${WS_DIR}/deb_versions.conf"
-ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 DEB_INSTALL_PATHS=()
+
+. "${WS_DIR}/scripts/lib_common.sh"
+. "${WS_DIR}/scripts/lib_github.sh"
+. "${WS_DIR}/scripts/lib_deb.sh"
 
 # 打包时保留的源码子模块（其余由 deb 提供，含 ht_ros2_control via arms-full）
 PACK_SOURCE_SUBMODULES=(
   "src/robot-descriptions-ht"
 )
 
-# 由 load_deb_versions_conf 从 deb_versions.conf 填充
-# 每项: owner/repo|显示名|deb前缀|release tag
-DEB_RELEASE_SOURCES=()
-
-# 共用函数库（颜色输出 / GitHub API / 下载 / deb 校验等）
-LIB_DEB_COMMON="${WS_DIR}/scripts/lib_deb_common.sh"
-if [ ! -f "${LIB_DEB_COMMON}" ]; then
-  echo "[ERROR] 未找到共用函数库: ${LIB_DEB_COMMON}" >&2
-  exit 1
-fi
-# shellcheck source=scripts/lib_deb_common.sh
-# shellcheck disable=SC1090
-. "${LIB_DEB_COMMON}"
-
-# 从 deb_versions.conf 加载：prefix|tag|repo → DEB_RELEASE_SOURCES
-load_deb_versions_conf() {
-  local line prefix tag repo display
-  DEB_RELEASE_SOURCES=()
-
-  if [ ! -f "${DEB_CONF}" ]; then
-    print_error "未找到 ${DEB_CONF}"
-    return 1
-  fi
-
-  while IFS= read -r line || [ -n "${line}" ]; do
-    line="${line%%#*}"
-    line="$(trim "${line}")"
-    [ -z "${line}" ] && continue
-    IFS='|' read -r prefix tag repo <<< "${line}"
-    prefix="$(trim "${prefix}")"
-    tag="$(trim "${tag}")"
-    repo="$(trim "${repo}")"
-    [ -z "${prefix}" ] || [ -z "${repo}" ] && continue
-    [ -z "${tag}" ] && tag="latest"
-    display="${prefix}"
-    display="${display#ros-${ROS_DISTRO}-}"
-    DEB_RELEASE_SOURCES+=("${repo}|${display}|${prefix}|${tag}")
-  done < "${DEB_CONF}"
-
-  if [ "${#DEB_RELEASE_SOURCES[@]}" -eq 0 ]; then
-    print_error "deb_versions.conf 中没有有效条目"
-    return 1
-  fi
-  print_info "已加载 deb_versions.conf（${#DEB_RELEASE_SOURCES[@]} 个包）"
-  return 0
-}
-
-prompt_package_arch() {
-  local choice
-  echo "" >&2
-  echo "请选择发布包 deb / zip 目标架构:" >&2
-  echo "  1) amd64 (x64)" >&2
-  echo "  2) arm64 (ARM)" >&2
-  echo "  0) 取消" >&2
-  echo "" >&2
-  read -r -p "请输入选项 [0-2]: " choice
-  case "${choice}" in
-    0) echo "" ;;
-    1) echo "amd64" ;;
-    2) echo "arm64" ;;
-    *)
-      print_warn "无效选项，已取消" >&2
-      echo ""
-      ;;
-  esac
-}
+# 打包时 arms 总是 full 变体
+ARMS_VARIANT="full"
 
 # 从源缓存目录复制目标架构、匹配前缀的 deb 到当前 DEB_CACHE_DIR（仅作候选，稍后按远端版本校验）
 seed_deb_cache_from() {
@@ -131,340 +81,22 @@ seed_deb_cache_from() {
       copied=$((copied + 1))
     done
   done
-  print_info "候选导入完成（新复制 ${copied} 个；将按 deb_versions.conf 校验版本）"
+  print_info "候选导入完成（新复制 ${copied} 个；将按 ${DEB_CHANNEL} 通道校验版本）"
 }
 
-
-# 从 GitHub API 获取指定 tag（或 latest）release 的 .deb 资产
-# 输出格式（每行）: tag\tname\turl
-# $1 = owner/repo  $2 = release tag（latest / pre-release / vX.Y.Z）
-fetch_release_deb_assets() {
-  local owner_repo="$1"
-  local req_tag="${2:-latest}"
-  local owner="${owner_repo%%/*}"
-  local repo="${owner_repo#*/}"
-  local api_url gh_path
-  local gh_token
-  gh_token="$(resolve_github_api_token)"
-
-  case "${req_tag}" in
-    latest|"*")
-      api_url="https://api.github.com/repos/${owner}/${repo}/releases/latest"
-      gh_path="repos/${owner}/${repo}/releases/latest"
-      ;;
-    *)
-      api_url="https://api.github.com/repos/${owner}/${repo}/releases/tags/${req_tag}"
-      gh_path="repos/${owner}/${repo}/releases/tags/${req_tag}"
-      ;;
-  esac
-
-  # 已安装且已登录 gh 时优先走 gh api（自动带凭据）
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if gh api "${gh_path}" \
-        --jq '.tag_name as $t | .assets[] | select(.name | endswith(".deb")) | "\($t)\t\(.name)\t\(.browser_download_url)"' \
-        2>"${TMPDIR:-/tmp}/gh_api.err.$$"; then
-      rm -f "${TMPDIR:-/tmp}/gh_api.err.$$"
-      return 0
-    fi
-    if grep -qi 'rate limit' "${TMPDIR:-/tmp}/gh_api.err.$$" 2>/dev/null; then
-      cat "${TMPDIR:-/tmp}/gh_api.err.$$" >&2
-      rm -f "${TMPDIR:-/tmp}/gh_api.err.$$"
-      print_github_rate_limit_help >&2
-      return 3
-    fi
-    rm -f "${TMPDIR:-/tmp}/gh_api.err.$$"
-  fi
-
-  GITHUB_API_TOKEN="${gh_token}" python3 - "${api_url}" <<'PY'
-import json
-import os
-import sys
-import urllib.error
-import urllib.request
-
-api_url = sys.argv[1]
-token = os.environ.get("GITHUB_API_TOKEN", "")
-
-headers = {
-    "Accept": "application/vnd.github+json",
-    "User-Agent": "ht-deploy-ws-release.sh",
-    "X-GitHub-Api-Version": "2022-11-28",
-}
-if token:
-    headers["Authorization"] = f"Bearer {token}"
-
-try:
-    req = urllib.request.Request(api_url, headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.load(resp)
-except urllib.error.HTTPError as e:
-    body = ""
-    try:
-        body = e.read().decode("utf-8", errors="replace")
-    except Exception:
-        pass
-    if e.code == 404:
-        print(f"ERROR\tNOT_FOUND\t{api_url}", file=sys.stderr)
-        sys.exit(2)
-    if e.code == 403 and "rate limit" in body.lower():
-        print(f"ERROR\tRATE_LIMIT\t{body}", file=sys.stderr)
-        sys.exit(3)
-    print(f"ERROR\tHTTP_{e.code}\t{body or api_url}", file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f"ERROR\t{e}\t{api_url}", file=sys.stderr)
-    sys.exit(1)
-
-tag = data.get("tag_name", "")
-for asset in data.get("assets", []):
-    name = asset.get("name", "")
-    url = asset.get("browser_download_url", "")
-    if name.endswith(".deb") and url:
-        print(f"{tag}\t{name}\t{url}")
-PY
-}
-
-# 在资产列表中选取匹配的 deb（按前缀与架构）
-select_deb_asset() {
-  local arch="$1"
-  local prefix="$2"
-  local assets_file="$3"
-
-  python3 - "${arch}" "${prefix}" "${assets_file}" <<'PY'
-import sys
-
-arch = sys.argv[1]
-prefix = sys.argv[2]
-path = sys.argv[3]
-
-assets = []
-with open(path, encoding="utf-8") as f:
-    for line in f:
-        line = line.strip()
-        if not line or line.startswith("ERROR"):
-            continue
-        parts = line.split("\t")
-        if len(parts) < 3:
-            continue
-        tag, name, url = parts[0], parts[1], parts[2]
-        if not name.endswith(".deb"):
-            continue
-        if prefix and not name.startswith(prefix):
-            continue
-        assets.append((tag, name, url))
-
-if not assets:
-    sys.exit(1)
-
-arch_suffix = f"_{arch}.deb"
-matched = [a for a in assets if a[1].endswith(arch_suffix)]
-if not matched:
-    amd64_suffix = "_amd64.deb"
-    matched = [a for a in assets if a[1].endswith(amd64_suffix)]
-    if matched and arch != "amd64":
-        print(f"WARN\t无 {arch} 包，回退 amd64\t{matched[0][1]}", file=sys.stderr)
-
-if len(matched) == 1:
-    tag, name, url = matched[0]
-    print(f"{tag}\t{name}\t{url}")
-    sys.exit(0)
-
-# 多个匹配时取版本号排序后最后一个（通常版本最高）
-matched.sort(key=lambda x: x[1])
-tag, name, url = matched[-1]
-print(f"{tag}\t{name}\t{url}")
-PY
-}
-
-# 固定 tag：直接构造 releases/download URL 下载 deb（不查 GitHub API，避免速率限制）
-# 资产名按 deb_versions.conf 期望格式 ${prefix}_${conf_ver}_${arch}.deb 构造；
-# 无 <arch> 包时回退 amd64（与 select_deb_asset 行为一致）。
-# 成功返回 0；下载失败或非有效 deb 返回 1（调用方回退 API 查询）。
-# $1 = owner/repo  $2 = 显示名  $3 = 包前缀  $4 = release tag  $5 = 版本段  $6 = 架构
-download_deb_by_constructed_url() {
-  local owner_repo="$1" display="$2" prefix="$3" conf_tag="$4" conf_ver="$5" arch="$6"
-  local name url dest cand arch_label
-  local -a candidates=("${prefix}_${conf_ver}_${arch}.deb|${arch}")
-
-  if [ "${arch}" != "amd64" ]; then
-    candidates+=("${prefix}_${conf_ver}_amd64.deb|amd64")
-  fi
-
-  for cand in "${candidates[@]}"; do
-    name="${cand%%|*}"
-    arch_label="${cand##*|}"
-    url="https://github.com/${owner_repo}/releases/download/${conf_tag}/${name}"
-    dest="${DEB_CACHE_DIR}/${name}"
-
-    if [ -f "${dest}" ]; then
-      print_info "${display}: 复用缓存 $(basename "${dest}") (${conf_tag})"
-      prune_deb_cache "${DEB_CACHE_DIR}" "${prefix}" "$(basename "${dest}")"
-      return 0
-    fi
-
-    print_info "${display}: 直接下载 ${name} (${conf_tag}) ..."
-    if download_file "${url}" "${dest}.part"; then
-      if is_valid_deb_file "${dest}.part"; then
-        mv "${dest}.part" "${dest}"
-        print_info "已保存: ${dest}"
-        prune_deb_cache "${DEB_CACHE_DIR}" "${prefix}" "$(basename "${dest}")"
-        return 0
-      fi
-      print_warn "${display}: 下载内容不是有效 deb，回退 API 查询: ${name}"
-      rm -f "${dest}.part"
-      return 1
-    fi
-    rm -f "${dest}.part"
-    if [ "${arch_label}" != "${arch}" ]; then
-      print_warn "${display}: 无 ${arch} 包，回退 amd64: ${name}"
-    else
-      print_warn "${display}: 下载失败: ${url}"
-    fi
-  done
-
-  return 1
-}
-
-download_deb_for_source() {
-  local entry="$1"
-  local arch="$2"
-  local owner_repo display prefix conf_tag
-  local assets_file tag name url dest sel_line
-  local conf_ver expected
-  local -a stale=()
-  local f
-
-  IFS='|' read -r owner_repo display prefix conf_tag <<< "${entry}"
-
-  mkdir -p "${DEB_CACHE_DIR}"
-
-  conf_ver="$(tag_to_deb_version "${conf_tag}")"
-  # 固定 tag：先按 deb_versions.conf 期望文件名校验本地缓存
-  if [ -n "${conf_ver}" ]; then
-    expected="${DEB_CACHE_DIR}/${prefix}_${conf_ver}_${arch}.deb"
-    if [ -f "${expected}" ]; then
-      print_info "${display}: 与 deb_versions.conf 一致，复用 $(basename "${expected}") (tag=${conf_tag})"
-      prune_deb_cache "${DEB_CACHE_DIR}" "${prefix}" "$(basename "${expected}")"
-      return 0
-    fi
-    shopt -s nullglob
-    stale=("${DEB_CACHE_DIR}/${prefix}"_*_"${arch}".deb)
-    shopt -u nullglob
-    if [ "${#stale[@]}" -gt 0 ]; then
-      print_warn "${display}: 缓存不满足 deb_versions.conf（需要 ${prefix}_${conf_ver}_${arch}.deb / ${conf_tag}）"
-      for f in "${stale[@]}"; do
-        print_warn "  旧缓存: $(basename "${f}")"
-      done
-    fi
-
-    # 固定 tag：直接构造 releases/download URL 下载（不查 GitHub API，避免限流），失败再回退 API
-    if download_deb_by_constructed_url "${owner_repo}" "${display}" "${prefix}" "${conf_tag}" "${conf_ver}" "${arch}"; then
-      return 0
-    fi
-    print_warn "${display}: 直接 URL 下载失败，回退 GitHub API 查询 ..."
-  fi
-
-  print_info "查询 ${display} (${owner_repo}@${conf_tag}) ..."
-
-  assets_file="$(mktemp)"
-  if ! fetch_release_deb_assets "${owner_repo}" "${conf_tag}" > "${assets_file}" 2>"${assets_file}.err"; then
-    local fetch_rc=$?
-    if grep -q $'\tNOT_FOUND\t' "${assets_file}.err" 2>/dev/null; then
-      print_warn "跳过 ${display}: 无 Release tag ${conf_tag}"
-    elif [ "${fetch_rc}" -eq 3 ] || grep -q $'\tRATE_LIMIT\t' "${assets_file}.err" 2>/dev/null; then
-      print_error "获取 Release 失败: ${owner_repo}@${conf_tag}（GitHub API 速率限制）"
-      cat "${assets_file}.err" >&2
-      print_github_rate_limit_help
-    else
-      print_error "获取 Release 失败: ${owner_repo}@${conf_tag}"
-      cat "${assets_file}.err" >&2
-    fi
-    rm -f "${assets_file}" "${assets_file}.err"
-    return 1
-  fi
-  rm -f "${assets_file}.err"
-
-  sel_line="$(select_deb_asset "${arch}" "${prefix}" "${assets_file}" 2>"${assets_file}.warn")" || sel_line=""
-  if [ -z "${sel_line}" ]; then
-    print_warn "跳过 ${display}: 未找到匹配 deb (前缀: ${prefix}, 架构: ${arch}, tag: ${conf_tag})"
-    rm -f "${assets_file}" "${assets_file}.warn"
-    return 1
-  fi
-  if [ -s "${assets_file}.warn" ]; then
-    while IFS=$'\t' read -r _ msg deb_name; do
-      print_warn "${display}: ${msg} -> ${deb_name}"
-    done < "${assets_file}.warn"
-  fi
-  rm -f "${assets_file}" "${assets_file}.warn"
-
-  tag="$(echo "${sel_line}" | cut -f1)"
-  name="$(echo "${sel_line}" | cut -f2)"
-  url="$(echo "${sel_line}" | cut -f3)"
-
-  dest="${DEB_CACHE_DIR}/${name}"
-
-  if [ -f "${dest}" ]; then
-    print_info "${display}: 版本匹配，复用缓存 ${name} (${tag})"
-    prune_deb_cache "${DEB_CACHE_DIR}" "${prefix}" "$(basename "${dest}")"
-    return 0
-  fi
-
-  print_info "下载 ${name} (${tag} / conf=${conf_tag}) ..."
-  if ! download_file "${url}" "${dest}.part"; then
-    print_error "下载失败: ${url}"
-    rm -f "${dest}.part"
-    return 1
-  fi
-  mv "${dest}.part" "${dest}"
-  print_info "已保存: ${dest}"
-
-  prune_deb_cache "${DEB_CACHE_DIR}" "${prefix}" "$(basename "${dest}")"
-  return 0
-}
-
-# 检查 .deb_cache 是否已含 deb_versions.conf 期望的全部 deb（按固定 tag）
-# $1 = 架构；全部命中返回 0，否则返回 1
-deb_cache_is_complete() {
-  local arch="$1"
-  local entry _owner_repo display prefix conf_tag conf_ver
-  local missing=0
-
-  for entry in "${DEB_RELEASE_SOURCES[@]}"; do
-    IFS='|' read -r _owner_repo display prefix conf_tag <<< "${entry}"
-    conf_ver="$(tag_to_deb_version "${conf_tag}")"
-    if [ -n "${conf_ver}" ] && [ -f "${DEB_CACHE_DIR}/${prefix}_${conf_ver}_${arch}.deb" ]; then
-      continue
-    fi
-    # latest / * 等无固定版本标签无法离线判断，按缺失处理
-    print_info "  ${display}: 缓存缺失 ${prefix}_${conf_ver}_${arch}.deb"
-    missing=1
-  done
-
-  [ "${missing}" -eq 0 ]
-}
-
-# 从 GitHub Release 拉取 deb 到 .deb_cache/
+# 从 GitHub Release 拉取 deb 到 .deb_cache/（按 DEB_CHANNEL 通道）
 # $1 = 目标架构（可选，默认本机架构）
 download_debs() {
   local arch="${1:-}"
-  local entry
-  local fail=0
+  local entry fail=0
 
   need_cmd python3 || return 1
   if [ -z "${arch}" ]; then
     arch="$(detect_machine_arch)"
   fi
-  print_info "按 deb_versions.conf 同步 deb 到 ${DEB_CACHE_DIR} (arch=${arch}) ..."
+  print_info "按通道 ${DEB_CHANNEL} 同步 deb 到 ${DEB_CACHE_DIR} (arch=${arch}) ..."
 
   mkdir -p "${DEB_CACHE_DIR}"
-
-  # 已有完整缓存则直接复用，避免 GitHub API 查询
-  if deb_cache_is_complete "${arch}"; then
-    echo ""
-    print_info "已有完整缓存，跳过下载（直接使用 .deb_cache/ 中的 deb）"
-    print_info "下载完成。安装请执行: ./release.sh --install"
-    return 0
-  fi
 
   for entry in "${DEB_RELEASE_SOURCES[@]}"; do
     if ! download_deb_for_source "${entry}" "${arch}"; then
@@ -549,16 +181,6 @@ apt_install_local_debs() {
   fi
 }
 
-apt_remove_packages() {
-  # 卸载系统中的包（保留配置文件，避免误删系统级配置）
-  if command -v apt >/dev/null 2>&1; then
-    sudo apt remove -y "$@"
-  else
-    need_cmd apt-get || return 1
-    sudo apt-get remove -y "$@"
-  fi
-}
-
 install_debs() {
   local -a deb_files=("$@")
   local deb bn deb_abs
@@ -589,41 +211,9 @@ install_debs() {
   print_info "下一步: cd \"${WS_DIR}\" && ./quick_start.sh"
 }
 
+# 逆序卸载（复用 lib_deb.sh 的 uninstall_core_debs，卸载全部）
 uninstall_debs() {
-  local -a uninstall_entries=()
-  local entry display prefix
-  local pkg i total
-
-  need_cmd sudo || return 1
-
-  # 按安装顺序反向卸载：arms-ros2-control-full -> robot-descriptions-common -> ocs2_ros2
-  for ((i=${#DEB_RELEASE_SOURCES[@]}-1; i>=0; i--)); do
-    uninstall_entries+=("${DEB_RELEASE_SOURCES[i]}")
-  done
-
-  total="${#uninstall_entries[@]}"
-  print_info "按逆序卸载 ${total} 个 deb 对应系统包..."
-  print_info "顺序: arms-ros2-control-full → robot-descriptions-common → ocs2_ros2"
-
-  i=1
-  for entry in "${uninstall_entries[@]}"; do
-    IFS='|' read -r _owner_repo display prefix _conf_tag <<< "${entry}"
-    pkg="${prefix}"
-    print_info "[${i}/${total}] 卸载 ${display} (${pkg}) ..."
-
-    if dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | grep -q "install ok installed"; then
-      if ! apt_remove_packages "${pkg}"; then
-        print_error "卸载失败: ${pkg}"
-        return 1
-      fi
-    else
-      print_warn "未安装，跳过: ${pkg}"
-    fi
-    i=$((i + 1))
-  done
-
-  print_info "逆序卸载完成"
-  print_info "如需清理孤立依赖，可执行: sudo apt autoremove -y"
+  uninstall_core_debs ""
 }
 
 get_submodule_default_branch() {
@@ -632,7 +222,7 @@ get_submodule_default_branch() {
 }
 
 # 打包用子模块：同步配置并检出当前已记录/已检出的版本（默认不 fetch）
-# $1 = 1 时额外拉取各子模块默认分支最新提交（--update-submodules）
+# $1 = 1 时额外拉取各子模块默认分支最新提交
 prepare_pack_submodules() {
   local pull_latest="${1:-0}"
   local path branch
@@ -749,24 +339,27 @@ create_deb_submodule_placeholders() {
   return 0
 }
 
-# 含 .git 打包：deinit 并清空 deb 子模块目录
+# 含 .git 打包：deinit 并清空 deb 子模块目录（只保留目录占位）
 clear_unused_submodules() {
   local path
 
   cd "${WS_DIR}" || return 1
 
-  print_info "清空 deb 子模块目录..."
+  print_info "清空 deb 子模块目录（只保留目录）..."
   while IFS= read -r path; do
     [ -n "${path}" ] || continue
     print_info "  清空: ${path} ..."
     git submodule deinit -f -- "${path}" 2>/dev/null || true
     rm -rf ".git/modules/${path}"
-    rm -rf "${path}"
+    find "${path}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
     _write_deb_submodule_placeholder "${path}"
   done < <(_each_deb_provided_submodule_path)
 
   return 0
 }
+
+# 打包通道非 conf 时：把 zip 内 deb_versions.conf 的 tag 改为与打包通道一致
+# 实现见 scripts/lib_deb.sh 的 rewrite_conf_tag_to_channel
 
 # $1 = 是否包含 .git（1=是，0=否；默认 1）
 # $2 = zip/deb 目标架构（amd64 | arm64）
@@ -908,10 +501,12 @@ do_package_release() {
       WS_DIR="${saved_ws[0]}"
       DEB_CACHE_DIR="${saved_ws[1]}"
       DIST_DIR="${saved_ws[2]}"
+      DEB_CONF="${saved_ws[3]}"
     fi
   }
 
   print_info "======== 开始发布打包 ========"
+  print_info "deb 来源通道: ${DEB_CHANNEL}（arms 固定 full 变体）"
   print_info "打包保留: ${PACK_SOURCE_SUBMODULES[*]}"
   if [[ "${include_git}" == "1" ]]; then
     print_info "deb 子模块: 复制后清空为占位（由 deb 提供）"
@@ -936,12 +531,13 @@ do_package_release() {
   fi
   orig_dist="${WS_DIR}/dist"
   host_deb_cache="${DEB_CACHE_DIR}"
-  saved_ws=("${WS_DIR}" "${DEB_CACHE_DIR}" "${DIST_DIR}")
+  saved_ws=("${WS_DIR}" "${DEB_CACHE_DIR}" "${DIST_DIR}" "${DEB_CONF}")
   trap package_release_cleanup EXIT
 
   WS_DIR="${staging}"
   DEB_CACHE_DIR="${WS_DIR}/.deb_cache"
   DIST_DIR="${orig_dist}"
+  DEB_CONF="${WS_DIR}/deb_versions.conf"
   print_info "打包工作目录: ${WS_DIR}"
   print_info "deb 缓存目录: ${DEB_CACHE_DIR}"
 
@@ -956,7 +552,12 @@ do_package_release() {
     done
   fi
 
-  print_info "按 deb_versions.conf 准备 .deb_cache（版本匹配则复用，否则按 conf tag 下载）..."
+  # 打包通道非 conf 时：修改 zip 内 deb_versions.conf 的 tag 与打包通道一致
+  if [ "${DEB_CHANNEL}" != "conf" ]; then
+    rewrite_conf_tag_to_channel "${DEB_CONF}" "${DEB_CHANNEL}"
+  fi
+
+  print_info "按通道 ${DEB_CHANNEL} 准备 .deb_cache（缓存匹配则复用，否则下载）..."
   mkdir -p "${DEB_CACHE_DIR}"
   seed_deb_cache_from "${host_deb_cache}" "${package_arch}"
   if ! download_debs "${package_arch}"; then
@@ -1003,15 +604,15 @@ list_releases() {
       continue
     fi
     assets_file="$(mktemp)"
-    if ! fetch_release_deb_assets "${owner_repo}" "${conf_tag}" > "${assets_file}" 2>/dev/null; then
+    if ! fetch_release_assets_with_size "${owner_repo}" "${conf_tag}" > "${assets_file}" 2>/dev/null; then
       printf "%-36s | %-12s | %s\n" "${display}" "${conf_tag}" "无 Release"
       rm -f "${assets_file}"
       continue
     fi
     tag="$(head -n1 "${assets_file}" | cut -f1)"
-    if _sel_line="$(select_deb_asset "${arch}" "${prefix}" "${assets_file}" 2>/dev/null)" && [ -n "${_sel_line}" ]; then
-      _deb_name="$(echo "${_sel_line}" | cut -f2)"
-      printf "%-36s | %-12s | %s\n" "${display}" "${conf_tag}" "${_deb_name}"
+    mapfile -t _asset_names < <(cut -d'|' -f1 "${assets_file}")
+    if _sel_line="$(select_asset_name "${arch}" "${prefix}" "${_asset_names[@]}")" && [ -n "${_sel_line}" ]; then
+      printf "%-36s | %-12s | %s\n" "${display}" "${conf_tag}" "${_sel_line}"
     else
       printf "%-36s | %-12s | %s\n" "${display}" "${conf_tag}" "(无 ${arch} 匹配包, release=${tag})"
     fi
@@ -1026,6 +627,26 @@ list_releases() {
   done
 }
 
+prompt_package_arch() {
+  local choice
+  echo "" >&2
+  echo "请选择发布包 deb / zip 目标架构:" >&2
+  echo "  1) amd64 (x64)" >&2
+  echo "  2) arm64 (ARM)" >&2
+  echo "  0) 取消" >&2
+  echo "" >&2
+  read -r -p "请输入选项 [0-2]: " choice
+  case "${choice}" in
+    0) echo "" ;;
+    1) echo "amd64" ;;
+    2) echo "arm64" ;;
+    *)
+      print_warn "无效选项，已取消" >&2
+      echo ""
+      ;;
+  esac
+}
+
 show_interactive_menu() {
   local choice
 
@@ -1037,7 +658,7 @@ show_interactive_menu() {
     echo -e "${BLUE}========================================${NC}"
     echo ""
     echo "请选择操作:"
-    echo "  1) 下载 deb 依赖包（从 deb_versions.conf 中获取，安装到 .deb_cache）"
+    echo "  1) 下载 deb 依赖包（按发布通道到 .deb_cache）"
     echo "  2) 安装 deb 依赖包（从 .deb_cache 安装，需 sudo）"
     echo "  3) 一键卸载 deb（按安装逆序，需 sudo）"
     echo "  4) 发布打包 zip（含 .git）"
@@ -1048,6 +669,7 @@ show_interactive_menu() {
 
     case "${choice}" in
       1)
+        prompt_channel
         download_debs
         ;;
       2)
@@ -1072,6 +694,8 @@ show_interactive_menu() {
       4)
         echo ""
         print_info "在临时目录打包（含 .git），不会修改当前工作区子模块"
+        print_info "请选择本次打包的 deb 来源通道："
+        prompt_channel
         read -r -p "确认继续？[y/N]: " confirm
         case "${confirm}" in
           y|Y|yes|YES)
@@ -1090,6 +714,8 @@ show_interactive_menu() {
         _pkg_arch="$(prompt_package_arch)"
         if [ -n "${_pkg_arch}" ]; then
           print_info "在临时目录打包（不含 .git，架构 ${_pkg_arch}），不会修改当前工作区子模块"
+          print_info "请选择本次打包的 deb 来源通道："
+          prompt_channel
           read -r -p "确认继续？[y/N]: " confirm
           case "${confirm}" in
             y|Y|yes|YES)
@@ -1121,13 +747,19 @@ usage() {
 用法: $0 [选项]
 
 选项:
-  --download            按 deb_versions.conf 下载 deb 到 ${DEB_CACHE_DIR}/（已有匹配缓存则直接复用）
-                        固定 tag 时直接使用 releases/download URL（不查 GitHub API，避免限流）
+  --download [--channel <conf|latest|pre-release>]
+                        按发布通道下载 deb 到 ${DEB_CACHE_DIR}/（缓存匹配则复用）
+                        conf 固定版本直接使用 releases/download URL（不查 GitHub API）；
+                        latest / pre-release 仅通过 GitHub API 查询下载地址
   --install             从 .deb_cache/ 按顺序 apt 安装 deb（需 sudo）
   --uninstall           按安装逆序卸载系统中的 deb 包（需 sudo）
-  --package             维护者：打包 zip（含 .git；deb 架构=本机）
-  --package-no-git      维护者：打包 zip（不含 .git；可配合 --arch）
+  --package [--channel <conf|latest|pre-release>] [--update-submodules]
+                        维护者：打包 zip（含 .git；deb 架构=本机）
+  --package-no-git --arch <amd64|arm64> [--channel ...]
+                        维护者：打包 zip（不含 .git）
   --arch <amd64|arm64>  与 --package-no-git 联用，指定 deb/zip 目标架构
+  --channel <conf|latest|pre-release>
+                        发布通道（默认 conf；打包/下载时可用，--package-no-git 时优先）
   --update-submodules   打包前从远程拉取保留子模块最新（默认用当前已检出版本）
   --list                维护者：列出 deb_versions.conf 对应 Release deb
   -h, --help            显示帮助
@@ -1156,16 +788,18 @@ deb 卸载顺序（安装顺序倒序）:
   3. ros-${ROS_DISTRO}-ocs2
 
 发布打包 (--package / --package-no-git) 流程（在临时目录执行，不修改当前工作区）:
-  1. --package: 检出保留子模块 + 清空 deb 子模块为占位
+  1. 选择 deb 来源通道（conf / latest / pre-release）；arms 固定 full
+  2. --package: 检出保留子模块 + 清空 deb 子模块为占位
      --package-no-git: 仅 rsync 保留子模块文件，deb 子模块不复制、只建占位
-  2. 导入工作区 .deb_cache 候选；按 deb_versions.conf 的 tag/版本校验，匹配则复用，否则按 conf tag 下载
-  3. 生成 ${DIST_DIR}/ht_deploy_ws_<时间>_<架构>[_nogit].zip 并删除临时目录
+  3. 通道非 conf 时，zip 内 deb_versions.conf 的 tag 改为与打包通道一致
+  4. 导入工作区 .deb_cache 候选；按通道校验版本，匹配则复用，否则下载
+  5. 生成 ${DIST_DIR}/ht_deploy_ws_<时间>_<架构>[_nogit].zip 并删除临时目录
 
 打包前若需最新子模块，请加 --update-submodules（或运行 ./init_repo.sh 后重新打包）
 
 示例:
-  ./release.sh --package-no-git --arch arm64
-  ./release.sh --package --update-submodules
+  ./release.sh --package-no-git --arch arm64 --channel pre-release
+  ./release.sh --package --channel latest --update-submodules
 EOF
 }
 
@@ -1183,6 +817,10 @@ run_package_release() {
           return 1
         fi
         deb_arch="$2"
+        shift 2
+        ;;
+      --channel)
+        set_deb_channel "${2:-}" || return 1
         shift 2
         ;;
       --update-submodules)
@@ -1218,7 +856,7 @@ main() {
       ;;
   esac
 
-  load_deb_versions_conf || exit 1
+  load_deb_conf || exit 1
 
   case "${1:-}" in
     --list)
@@ -1226,6 +864,20 @@ main() {
       exit 0
       ;;
     --download)
+      shift
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --channel)
+            set_deb_channel "${2:-}" || exit 1
+            shift 2
+            ;;
+          *)
+            print_error "未知参数: $1"
+            usage
+            exit 1
+            ;;
+        esac
+      done
       download_debs
       exit $?
       ;;
