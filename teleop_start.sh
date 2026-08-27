@@ -41,8 +41,8 @@ RViz="false"
 
 # 真机 hardware 透传参数（hardware_ 前缀，仅 hardware:=real/real_usb 生效；
 # 关节 kp/kd 为数组，每臂 6 值，dual 时 xacro 自动拼接为 12 值）
-HARDWARE_JOINT_KP=(0.01 0.01 0.01 0.01 0.01 0.01)
-HARDWARE_JOINT_KD=(0.1 0.1 0.1 0.1 0.1 0.1)
+HARDWARE_JOINT_KP=(30.0 30.0 30.0 30.0 30.0 30.0)
+HARDWARE_JOINT_KD=(3.0 3.0 3.0 3.0 3.0 3.0)
 
 # 编译目标源码目录（真机多 ht-ros2-control；arms_ros2_control / ocs2_ros2 存在才编译）
 BUILD_PKGS_BASE=(drag_teleop_controller robot-descriptions-ht)

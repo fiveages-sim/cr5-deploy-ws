@@ -46,6 +46,140 @@ source /opt/ros/jazzy/setup.bash
 
 可选：安装 RMW Zenoh（见下文「安装 RMW Zenoh C++」）。
 
+### A.1 日常控制：`quick_start.sh`（OCS2 MPC 控制）
+
+`quick_start.sh` 用于**单机单臂/双臂的日常控制**（OCS2 MPC 框架：HOLD / HOME / OCS2 / MOVEJ 状态机），是现场最常用的入口。
+
+```bash
+cd ~/ht-deploy-ws
+./quick_start.sh
+```
+
+**主菜单**（有历史启动时前 1~2 项为最近配置，回车直接重现）：
+
+| 选项 | 说明 |
+|------|------|
+| `1) 上次启动` / `2) 另一次启动` | 直接重现最近一次/前一次的启动配置（含臂组合、仿真/真机、控制模式、拖动模式、USB 口） |
+| `编译 (Build)` | 按场景编译：`1) 仿真所需包` / `2) 真机所需包`（真机包含 `ht_ros2_control` 驱动；arms-full deb 已提供时自动跳过） |
+| `启动 (Launch)` | 进入启动流程（见下） |
+
+**启动流程**（`启动 (Launch)`）：
+
+1. **臂组合**：`1) 双臂 dual`（默认）/ `2) 单臂 single` / `3) 左臂 left` / `4) 右臂 right` / `5) 手柄遥操作`
+2. **运行模式**：`1) 仿真`（默认）/ `2) 真机`（真机自动检查 `/dev/ttyACM*` 串口权限，无权限时提示 `sudo chmod a+rw`）
+3. **真机控制模式**（仅真机）：`1) mit`（默认，位置+速度+力矩+kp/kd）/ `2) effort`（纯力矩）/ `3) position`（纯位置）
+4. **拖动模式**（仅真机，可选）：低刚度 kp/kd（`hardware_joint_kp/kd` 透传），夹爪可掰动，用于人工示教
+5. **控制盒选择**（多套机械臂同机时）：自动检测或按 USB 路径指定（`xacro_usb_select`）
+
+底层等价命令（双臂真机 mit）：
+
+```bash
+ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=dual hardware:=real
+# 控制模式：追加 xacro_control_mode:=effort|position
+# 拖动模式：追加 hardware_joint_kp:="0.01, ..." hardware_joint_kd:="0.1, ..." \
+#           hardware_gripper_kp:=0.001 hardware_gripper_kd:=0.01
+# 指定控制盒：追加 xacro_usb_select:=usb-0:1.2
+```
+
+启动后通过 FSM 状态机控制（详见下文「外部控制接口」）：
+
+```bash
+ros2 topic pub -1 /fsm_command std_msgs/msg/Int32 "{data: 3}"   # 1=HOME 2=HOLD 3=OCS2 4=MOVEJ
+```
+
+手柄遥操作（`5) 手柄遥操作`）与 OCS2 控制进程分开启动：先启动单臂/双臂控制，再启动手柄。
+
+### A.2 主从拖动遥操作：`teleop_start.sh`
+
+`teleop_start.sh` 用于**双臂主从遥操作**：master（主臂）由操作者拖动（重力补偿），slave（从臂）实时跟随 master 的运动。需要**两个终端**分别启动 master 与 slave 两个进程。
+
+```bash
+cd ~/ht-deploy-ws
+./teleop_start.sh
+```
+
+**主菜单**与 `quick_start.sh` 相同（历史启动 / 编译 / 启动），历史条目独立记录（`kind=teleop`）。
+
+**编译**：`1) 真机包`（默认，`drag_teleop_controller` + `robot-descriptions-ht` + `ht-ros2-control` + 可选的 `arms_ros2_control`/`ocs2_ros2`）/ `2) 仿真包`。
+
+**启动流程**（`启动 (Launch)`）：
+
+1. **角色**：`1) master`（默认，主臂：操作者拖动、重力补偿）/ `2) slave`（从臂：跟随主臂）
+2. **启动目标**：`1) 真机`（默认）/ `2) 仿真`
+3. **控制模式**：
+   - master：`1) mit` / `2) effort`（**默认**，纯力矩 + 重力补偿）
+   - slave：`1) mit`（**默认**）/ `2) effort` / `3) position`
+4. **力反馈**（仅 master + 真机）：`1) none`（默认）/ `2) position`（基于位置误差）/ `3) effort`（基于从臂外部力矩）
+5. **ocs2 发布**（仅 master）：是否发布 ocs2 moveJ + 夹爪位置命令（`moveJ_pub`）
+6. **控制盒选择**（真机，多盒时）
+
+> **混合遥操作（从臂用 OCS2 控制）**：从臂不一定要用 `teleop_start.sh` 的 slave 角色。
+> 从臂也可以用 `quick_start.sh` 启动 OCS2 控制（`ocs2_arm_controller`），并切换到 **MOVEJ** 状态
+> （`ros2 topic pub -1 /fsm_command std_msgs/msg/Int32 "{data: 4}"`）；此时主臂启动时选择
+> **发布 ocs2 命令**（`moveJ_pub:=true`），`Ocs2Publisher` 会把主臂关节位置发布到
+> `/ocs2_arm_controller/target_joint_position`，从臂 OCS2 控制器在 MOVEJ 状态下订阅并跟踪，
+> 同样可以实现遥操作。
+>
+> **注意**：这种混合方式下从臂不是 `drag_teleop_controller` 的 slave 角色，不会发布
+> `/drag_teleop_slave/teleop_states`，主臂收不到从臂状态，因此**无法使用力反馈**
+> （`position` / `effort` 反馈都依赖从臂状态话题），只能单向跟随。
+
+底层等价命令：
+
+```bash
+# 终端 A：master（主臂，effort 模式 + 低刚度拖动）
+ros2 launch drag_teleop_controller drag_teleop_controller.launch.py \
+  robot:=panthera_ht type:=dual role:=master hardware:=real mode:=effort \
+  hardware_control_mode:=effort hardware_gripper_kp:=0 hardware_gripper_kd:=0
+
+# 终端 B：slave（从臂，mit 模式跟随）
+ros2 launch drag_teleop_controller drag_teleop_controller.launch.py \
+  robot:=panthera_ht type:=dual role:=slave hardware:=real mode:=mit
+```
+
+> 注意：`teleop_start.sh` 启动 master 时自动透传低刚度 kp/kd（`HARDWARE_JOINT_KP/KD`）并把夹爪增益清零（`hardware_gripper_kp/kd:=0`），避免位置环对抗拖动；控制模式同时同步到硬件（`hardware_control_mode`）。
+
+### A.3 主从遥操作说明
+
+**架构**：master 与 slave 各运行一个 `drag_teleop_controller` 进程（500Hz），通过话题交换状态：
+
+```
+┌─ master 进程（role:=master）─────────────┐   ┌─ slave 进程（role:=slave）─────────────┐
+│ DragTeleopController (500Hz)             │   │ DragTeleopController (500Hz)             │
+│  读硬件状态（12 臂 + 2 夹爪状态）          │   │  读硬件状态（12 臂 + 2 夹爪状态）          │
+│  τ_G = rnea(q, 0, 0)                     │   │  τ_model = M a + C v + G（q̈ 数值微分）    │
+│  订阅 /drag_teleop_slave/teleop_states   │   │  订阅 /drag_teleop_master/teleop_states   │
+│  计算 q_cmd / τ_cmd（mode × feedback）    │   │  计算 q_cmd / τ_cmd（mode，ruckig 可选）   │
+│  发布 /drag_teleop_master/teleop_states  │   │  发布 /drag_teleop_slave/teleop_states    │
+│    （正映射：master→slave 参考系）         │   │    （逆映射：slave→master 参考系）         │
+└──────────────────────────────────────────┘   └──────────────────────────────────────────┘
+```
+
+- **状态话题**：`/drag_teleop_master/teleop_states`、`/drag_teleop_slave/teleop_states`（`sensor_msgs/JointState`，500Hz）。master 发布正映射（slave 关节名），slave 发布逆映射（master 关节名），接收方直接使用。
+- **控制模式**：
+  - `position`（仅 slave）：从臂直接跟踪主臂位置
+  - `mit`：同时下发 position/velocity/effort，由硬件内部混合；力反馈基于 $q_m$、$q_s$ 误差
+  - `effort`：控制器直接下发力矩（重力补偿 + 阻抗/力反馈力矩）
+- **力反馈**（仅 master）：`position` 基于位置误差（$\Delta q = -G \cdot \text{sat}(q_m - q_s - \text{dead\_zone})$）；`effort` 基于从臂外部力矩（$\tau_{cmd} = -G \cdot \tau_{ext,slave} + \tau_G$），从臂碰撞会回推主臂。
+- **运行中切换**（无需重启）：
+
+```bash
+ros2 service call /drag_teleop_master/teleop_mode \
+  drag_teleop_controller/srv/TeleopMode "{mode: effort}"
+ros2 service call /drag_teleop_master/teleop_feedback \
+  drag_teleop_controller/srv/TeleopFeedback "{mode: position}"
+```
+
+- **检查状态**：
+
+```bash
+ros2 control list_controllers --controller-manager /drag_teleop_master/controller_manager
+ros2 topic echo /drag_teleop_master/teleop_states
+ros2 topic echo /drag_teleop_slave/teleop_states
+```
+
+- **退出**：Ctrl+C 退出时硬件自动插值回 `shutdown_home`（默认零位）后进入阻尼/抱闸（`shutdown_return_home` 可在描述包 xacro 中关闭）。
+
 ---
 
 ## B. 开发方式（git clone）
