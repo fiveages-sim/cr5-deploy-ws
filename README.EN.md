@@ -1,6 +1,6 @@
-# HighTorque Panthera HT Manipulator ROS 2 Deployment Workspace
+# Fairino ART7 Manipulator ROS 2 Deployment Workspace
 
-This repository deploys a ROS 2 workspace for the HighTorque Panthera HT manipulator, a complete control ecosystem based on the OCS2 MPC control framework.
+This repository deploys a ROS 2 workspace for the Fairino ART7 manipulator, a complete control ecosystem based on the OCS2 MPC control framework.
 
 ### Prerequisites
 - ROS 2 Jazzy installed
@@ -17,18 +17,18 @@ This repository deploys a ROS 2 workspace for the HighTorque Panthera HT manipul
 
 Helper scripts: [`scripts/install_core_debs.sh`](scripts/install_core_debs.sh), [`scripts/uninstall_core_debs.sh`](scripts/uninstall_core_debs.sh), shared function library [`scripts/lib_deb_common.sh`](scripts/lib_deb_common.sh); version mapping in [`deb_versions.conf`](deb_versions.conf).
 
-Core deb install order: `ocs2` → `robot-descriptions-common` → `arms-ros2-control-full` (**includes `ht_ros2_control`**).  
-When `arms=deb`, the `ht-ros2-control` source tree is not fetched; the HT description package `robot-descriptions-ht` is still built from source.
+Core deb install order: `ocs2` → `robot-descriptions-common` → `arms-ros2-control-full` (**includes `fairino_ros2_control`**).  
+When `arms=deb`, the `fairino-ros2-control` source tree is not fetched; the Fairino description package `robot-descriptions-fairino` is still built from source.
 
 ---
 
 ## A. Quick deployment (recommended on site)
 
-Intended for “extract and run”: the release package already contains (or can download) core debs; you only need to install debs, build HT descriptions, and launch.
+Intended for “extract and run”: the release package already contains (or can download) core debs; you only need to install debs, build Fairino descriptions, and launch.
 
 ```bash
-# 1) Extract the release zip to the target directory, e.g. ~/ht-deploy-ws
-cd ~/ht-deploy-ws
+# 1) Extract the release zip to the target directory, e.g. ~/fairino-deploys-ws
+cd ~/fairino-deploys-ws
 
 # 2) Install core debs (requires sudo; if .deb_cache/ is already in the zip, install directly)
 ./release.sh --install
@@ -56,8 +56,8 @@ For editing submodules, switching source/deb, and following mainline development
 
 ```bash
 cd ~
-git clone -b panthera-ht git@github.com:fiveages-sim/open-deploy-ws.git ht-deploy-ws
-cd ~/ht-deploy-ws
+git clone -b fairino-art7 git@github.com:fiveages-sim/open-deploy-ws.git fairino-deploys-ws
+cd ~/fairino-deploys-ws
 ```
 
 ### 2. Initialize (`init_repo.sh`)
@@ -68,7 +68,7 @@ cd ~/ht-deploy-ws
 
 | Option | Description |
 |--------|-------------|
-| 1) Initialize | Per-module source/deb; **defaults ocs2/arms/common=deb**; when arms=deb you can choose `full` (includes `ht_ros2_control`, skips its source) or `standard` (requires source init of `ht-ros2-control`); when arms=source, nested `arms_ros2_control/hardwares/*` submodules are not fetched |
+| 1) Initialize | Per-module source/deb; **defaults ocs2/arms/common=deb**; when arms=deb you can choose `full` (includes `fairino_ros2_control`, skips its source) or `standard` (requires source init of `fairino-ros2-control`); when arms=source, nested `arms_ros2_control/hardwares/*` submodules are not fetched |
 | 2) Switch | Source ↔ deb (cleans conflicting directories or uninstalls debs; switching arms→deb also offers the variant choice) |
 | 3) Debs only | Install/update core debs only, without fetching Git submodules (when the list includes arms, the variant can also be chosen) |
 | 4) Uninstall debs | Detects and lists installed ocs2 / common / arms(-full), then lets you choose packages to uninstall |
@@ -77,12 +77,12 @@ cd ~/ht-deploy-ws
 Initialization also asks for the **deb release channel**: `1) latest` / `2) pre-release` / `3) conf` (see `deb_versions.conf`).
 
 **arms deb variants (full / standard)**:
-- For channels `latest` / `pre-release`, arms=deb asks whether to install `ros-jazzy-arms-ros2-control-full` (default, includes `ht_ros2_control`) or `ros-jazzy-arms-ros2-control` (standard package).
+- For channels `latest` / `pre-release`, arms=deb asks whether to install `ros-jazzy-arms-ros2-control-full` (default, includes `fairino_ros2_control`) or `ros-jazzy-arms-ros2-control` (standard package).
 - For channel `conf`, the arms-line variant in `deb_versions.conf` is read and you are prompted to confirm/switch (switch applies to this run only; the config file is not modified).
 
 **Submodule update safety**: `init_repo.sh` only fast-forwards each submodule to the latest commit on its **current branch** and **does not switch branches**; local submodule changes are `git stash`ed before update and restored afterward — your edits are never wiped, and the workspace’s own branch is not changed.
 
-**Recommended development start (core via deb, build only HT descriptions):**
+**Recommended development start (core via deb, build only Fairino descriptions):**
 
 ```bash
 ./init_repo.sh                    # choose deb for ocs2/arms/common (channel as needed)
@@ -90,13 +90,13 @@ source /opt/ros/jazzy/setup.bash
 ./quick_start.sh                  # build simulation / real-hardware packages
 ```
 
-To edit `arms` / `ocs2` / `ht_ros2_control` source: use `init_repo.sh` option 2 to switch the corresponding module to **source**, then build.
+To edit `arms` / `ocs2` / `fairino_ros2_control` source: use `init_repo.sh` option 2 to switch the corresponding module to **source**, then build.
 
 ### 3. Update submodules
 
 ```bash
-# Update only HT descriptions still kept as source (common in deb mode)
-git submodule update --remote src/robot-descriptions-ht
+# Update only Fairino descriptions still kept as source (common in deb mode)
+git submodule update --remote src/robot-descriptions-fairino
 
 # If arms etc. are source, then as needed:
 # git submodule update --remote
@@ -105,7 +105,7 @@ git submodule update --remote src/robot-descriptions-ht
 ### Directory layout (excerpt)
 
 ```
-ht-deploy-ws/
+fairino-deploys-ws/
 ├── init_repo.sh                  # Init / source-deb switching
 ├── quick_start.sh                # Build and launch
 ├── release.sh                    # On-site deb install / maintainer packaging
@@ -115,8 +115,8 @@ ht-deploy-ws/
 │   ├── uninstall_core_debs.sh
 │   └── lib_deb_common.sh      # Shared helpers (sourced by release.sh / install_core_debs.sh)
 └── src/
-    ├─ robot-descriptions-ht      # Usually source (HT models)
-    ├─ ht-ros2-control            # Provided by arms-full when arms=deb; may be skipped
+    ├─ robot-descriptions-fairino # Usually source (Fairino models)
+    ├─ fairino-ros2-control       # Provided by arms-full when arms=deb; may be skipped
     ├─ arms_ros2_control          # May be skipped in deb mode
     ├─ ocs2_ros2                  # May be skipped in deb mode
     └─ robot-descriptions-common  # May be skipped in deb mode
@@ -125,7 +125,7 @@ ht-deploy-ws/
 ### Troubleshooting
 - SSH permissions: if clone/update fails, confirm your local SSH key is added to GitHub and that `ssh -T git@github.com` succeeds.
 - Network issues: retry or use a proxy; switch to HTTPS cloning if necessary.
-- After switching to arms=deb, leftover `install/ht_ros2_control` can shadow the system deb plugin; delete that directory, then re-`source /opt/ros/jazzy/setup.bash` and the workspace `install/setup.bash`.
+- After switching to arms=deb, leftover `install/fairino_ros2_control` can shadow the system deb plugin; delete that directory, then re-`source /opt/ros/jazzy/setup.bash` and the workspace `install/setup.bash`.
 
 ---
 
@@ -149,9 +149,9 @@ Or run `./release.sh` for an interactive menu:
 - **4) Package release zip (with .git)** / **5) Package release zip (without .git, smaller)**
 
 The release package:
-1. Keeps `src/robot-descriptions-ht` as source; other submodules become placeholders (provided by debs)
+1. Keeps `src/robot-descriptions-fairino` as source; other submodules become placeholders (provided by debs)
 2. Downloads the latest core debs for the target architecture into `.deb_cache/` (reuses matching cache if present)
-3. Writes `dist/ht_deploy_ws_<timestamp>_<arch>[_nogit].zip`
+3. Writes `dist/fairino_deploy_ws_<timestamp>_<arch>[_nogit].zip`
 
 On-site usage is described under “Quick deployment” above.
 
@@ -180,7 +180,7 @@ Deployment hosts should use RMW Zenoh to avoid DDS message interference from oth
 ### 2.1 Install dependencies
 * Rosdep dependency installation
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
@@ -189,24 +189,24 @@ rosdep install --from-paths src --ignore-src -r -y
 This workspace provides a one-shot script `quick_start.sh` for **scenario-based builds** and **mode-based launch** (single arm / dual arm, simulation / real hardware).
 
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 chmod +x ./quick_start.sh
 ./quick_start.sh
 ```
 
 - In the menu, select **`1) Build`**
   - **`1) Build simulation packages`**: for simulation / development (no real-hardware drivers)
-  - **`2) Build real-hardware packages`**: for connecting to real hardware (when the `arms-full` deb already includes `ht_ros2_control`, you typically only need to build description packages)
+  - **`2) Build real-hardware packages`**: for connecting to real hardware (when the `arms-full` deb already includes `fairino_ros2_control`, you typically only need to build description packages)
 
 <details>
 <summary><strong>(Optional) Manual build commands</strong></summary>
 
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 # Simulation packages
 colcon build --packages-up-to \
   ocs2_arm_controller \
-  panthera_ht_description \
+  art7_description \
   arms_teleop \
   adaptive_gripper_controller \
   basic_joint_controller \
@@ -214,12 +214,12 @@ colcon build --packages-up-to \
 ```
 
 ```bash
-cd ~/ht-deploy-ws
-# Real-hardware packages (omit ht_ros2_control if already provided by the arms-full deb)
+cd ~/fairino-deploys-ws
+# Real-hardware packages (omit fairino_ros2_control if already provided by the arms-full deb)
 colcon build --packages-up-to \
-  ht_ros2_control \
+  fairino_ros2_control \
   ocs2_arm_controller \
-  panthera_ht_description \
+  art7_description \
   arms_teleop \
   adaptive_gripper_controller \
   basic_joint_controller \
@@ -232,31 +232,31 @@ colcon build --packages-up-to \
 
 #### 2.3.1 Model visualization
 ```bash
-source ~/ht-deploy-ws/install/setup.bash
-ros2 launch robot_common_launch manipulator.launch.py robot:=panthera_ht
+source ~/fairino-deploys-ws/install/setup.bash
+ros2 launch robot_common_launch manipulator.launch.py robot:=art7
 ```
 
 Dual arm:
 ```bash
-ros2 launch robot_common_launch manipulator.launch.py robot:=panthera_ht type:=dual
+ros2 launch robot_common_launch manipulator.launch.py robot:=art7 type:=dual
 ```
 
-**Dual-arm spacing**: change in one place only —
-`src/robot-descriptions-ht/panthera_ht_description/xacro/robot.xacro`
-parameters `left_mount_xyz` / `right_mount_xyz` (defaults about `0 ±0.35 0`, units m).
-Orientation uses `left_mount_rpy` / `right_mount_rpy`.
+**End-effector configuration**: left/right end-effector types are selected in
+`src/robot-descriptions-fairino/art7_description/xacro/robot.xacro` via the
+`type` / `left_type` / `right_type` arguments (e.g. `rg75`, `ag2f90`, etc.; see the end-effector key table in the `art7_description` README);
+left/right TCP offsets use `left_tcp_offset_xyz/rpy` / `right_tcp_offset_xyz/rpy`.
 
 At launch, `ocs2_arm_controller` generates the planning URDF from the same `xacro/robot.xacro`
 (cached under `/tmp/...`).
 After changing defaults, rebuild/install the description package (or restart launch under `--symlink-install`) so visualization and OCS2 both pick up the change.
 Day-to-day simulation / real-hardware control follows the xacro.
-See the *Mount parameters* section in the `panthera_ht_description` submodule README for full detail.
+See the `art7_description` submodule README for full detail.
 
 #### 2.3.2 Launch simulation control
 Prefer launching via `quick_start.sh` (it automatically `source`s `install/setup.bash`, provided a successful build has produced `install/`).
 
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 ./quick_start.sh
 ```
 
@@ -268,51 +268,50 @@ cd ~/ht-deploy-ws
 <summary><strong>(Optional) Manual simulation control launch</strong></summary>
 
 ```bash
-source ~/ht-deploy-ws/install/setup.bash
+source ~/fairino-deploys-ws/install/setup.bash
 # Single arm
-ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht
+ros2 launch ocs2_arm_controller demo.launch.py robot:=art7
 # Dual arm
-ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=dual
+ros2 launch ocs2_arm_controller demo.launch.py robot:=art7 type:=dual
 ```
 
 </details>
 
 #### 2.3.3 Launch real-hardware control
 
-**Before launching real hardware, confirm the motor serial port:**
+**Before launching real hardware, confirm the Fairino controller network reachability:**
 
 ```bash
-# 1) Check that the device exists (should list /dev/ttyACM0 etc.)
-ls /dev/ttyACM*
+# 1) Check that the controller IP is reachable (default 192.168.58.1, port 8081)
+ping 192.168.58.1
+# or test the TCP port directly:
+timeout 3 bash -c "exec 3<>/dev/tcp/192.168.58.1/8081" && echo OK
 
-# 2) If empty: check USB cable, power, and drivers; confirm Serial_Type in Panthera.yaml is /dev/ttyACM
-# 3) Once present, grant the current user read/write access (may need re-running after each reconnect)
-sudo chmod a+rw /dev/ttyACM*
+# 2) If unreachable: check the network cable, controller power, and the device_ip parameter of fairino_ros2_control
+# 3) If the controller IP differs from the default, override with environment variables:
+FAIRINO_IP=<controller-ip> FAIRINO_PORT=<port> ./quick_start.sh
 ```
-
-You can also add the user to the `dialout` group and re-login to reduce repeated `chmod`:
-`sudo usermod -aG dialout $USER`
 
 Then:
 
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 ./quick_start.sh
 ```
 
 - Select **`2) Launch`**
   - Choose single or dual arm
-  - Select **`2) Real Hardware`**
+  - Select **`2) Real Hardware`** (TCP reachability is checked automatically before launch)
 
 <details>
 <summary><strong>(Optional) Manual real-hardware control launch</strong></summary>
 
 ```bash
-source ~/ht-deploy-ws/install/setup.bash
+source ~/fairino-deploys-ws/install/setup.bash
 # Single arm (explicitly set type:=single)
-ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=single hardware:=real
+ros2 launch ocs2_arm_controller demo.launch.py robot:=art7 type:=single hardware:=real
 # Dual arm
-ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=dual hardware:=real
+ros2 launch ocs2_arm_controller demo.launch.py robot:=art7 type:=dual hardware:=real
 ```
 
 </details>
@@ -332,7 +331,7 @@ Usage:
 
 Or manually:
 ```bash
-source ~/ht-deploy-ws/install/setup.bash
+source ~/fairino-deploys-ws/install/setup.bash
 ros2 launch arms_teleop joystick_teleop.launch.py
 # With multiple joysticks, specify the device:
 # ros2 launch arms_teleop joystick_teleop.launch.py joy_dev:=/dev/input/js1
@@ -434,7 +433,7 @@ Processed by `arms_target_manager` and converted to `*_target` publications. Sui
 ## 4. Submodule notes
 
 - **arms_ros2_control** — Generic ROS 2 manipulator control (includes `arms_teleop`); deb available as `arms-ros2-control-full`
-- **ht-ros2-control** — Panthera HT hardware driver (`ht_ros2_control`); **included in the arms-full deb**
+- **fairino-ros2-control** — Fairino hardware driver (`fairino_ros2_control`, connects to the controller over TCP); **included in the arms-full deb**
 - **ocs2_ros2** — ROS 2 port of OCS2 (MPC control framework)
-- **robot-descriptions-ht** — HighTorque description repo (includes `panthera_ht_description`; kept as source in release packages)
+- **robot-descriptions-fairino** — Fairino description repo (includes `art7_description`; kept as source in release packages)
 - **robot-descriptions-common** — Shared robot components (grippers, cameras, launch, etc.)

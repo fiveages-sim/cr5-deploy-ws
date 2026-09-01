@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
-# HighTorque Panthera HT ROS2 部署工作空间初始化脚本
+# Fairino ART7 ROS2 部署工作空间初始化脚本
 # 功能：逐模块 source/deb 初始化子模块，下载并安装核心 deb，支持切换/卸载/rosdep
 # 说明：
 #   - 模块方式与通道每次运行选择，不保存配置
 #   - 通道 conf 使用 deb_versions.conf 固定 tag（直接拼接下载路径）；
 #     latest / pre-release 仅通过 GitHub API 查询下载地址
-#   - arms=deb 时可选变体 full（含 ht_ros2_control，跳过 src/ht-ros2-control）或 standard
+#   - arms=deb 时可选变体 full（含 fairino_ros2_control，跳过 src/fairino-ros2-control）或 standard
 #   - 子模块更新只做快进（不切换分支），本地修改暂存并在更新后恢复
 
 set -u
@@ -129,7 +129,7 @@ cleanup_deb_module_sources() {
   [ "$USE_DEB_ARMS" -eq 1 ] && path_has_content "src/arms_ros2_control" && paths+=("src/arms_ros2_control")
   [ "$USE_DEB_COMMON" -eq 1 ] && path_has_content "src/robot-descriptions-common" && paths+=("src/robot-descriptions-common")
   if [ "$USE_DEB_ARMS" -eq 1 ] && [ "${ARMS_VARIANT}" = "full" ]; then
-    path_has_content "src/ht-ros2-control" && paths+=("src/ht-ros2-control")
+    path_has_content "src/fairino-ros2-control" && paths+=("src/fairino-ros2-control")
   fi
 
   [ "${#paths[@]}" -eq 0 ] && return 0
@@ -137,8 +137,8 @@ cleanup_deb_module_sources() {
   echo "以下目录将改由 deb 提供，将清空其中内容（目录本身保留）："
   for p in "${paths[@]}"; do
     echo "  - ${p}"
-    if [ "${p}" = "src/ht-ros2-control" ]; then
-      echo "    （arms-full deb 已包含 ht_ros2_control）"
+    if [ "${p}" = "src/fairino-ros2-control" ]; then
+      echo "    （arms-full deb 已包含 fairino_ros2_control）"
     fi
   done
   if ! confirm_yn "确认清空上述目录内容？"; then
@@ -169,7 +169,7 @@ install_selected_debs() {
 flow_init() {
   echo ""
   echo "核心模块安装方式（d=deb, s=source，回车=deb）："
-  echo "  robot-descriptions-ht 始终源码"
+  echo "  robot-descriptions-fairino 始终源码"
   prompt_sd "ocs2_ros2" USE_DEB_OCS2
   prompt_sd "arms_ros2_control" USE_DEB_ARMS
   prompt_sd "robot-descriptions-common" USE_DEB_COMMON
@@ -268,12 +268,12 @@ flow_switch() {
     fi
   done
 
-  # arms 附属：ht-ros2-control 跟随 arms 变化（full deb 已含 ht_ros2_control）
+  # arms 附属：fairino-ros2-control 跟随 arms 变化（full deb 已含 fairino_ros2_control）
   if [ "${arms_changed}" -eq 1 ]; then
     if [ "$USE_DEB_ARMS" -eq 1 ] && [ "${ARMS_VARIANT}" = "full" ]; then
-      path_has_content "src/ht-ros2-control" && to_clear+=("src/ht-ros2-control")
-    elif ! path_is_git_checkout "src/ht-ros2-control"; then
-      to_pull+=("src/ht-ros2-control")
+      path_has_content "src/fairino-ros2-control" && to_clear+=("src/fairino-ros2-control")
+    elif ! path_is_git_checkout "src/fairino-ros2-control"; then
+      to_pull+=("src/fairino-ros2-control")
     fi
   fi
 
@@ -373,11 +373,11 @@ flow_submodule_only() {
       set_use_deb_for_module "${m}" 0
     fi
   done
-  # arms-full 已装时跳过 ht-ros2-control
+  # arms-full 已装时跳过 fairino-ros2-control
   if is_pkg_installed "ros-${ROS_DISTRO}-arms-ros2-control-full"; then
-    echo "  - src/ht-ros2-control（arms-full 已含 ht_ros2_control）"
+    echo "  - src/fairino-ros2-control（arms-full 已含 fairino_ros2_control）"
     echo "  如需手动拉取该源码子模块，可执行："
-    echo "    git submodule update --init src/ht-ros2-control"
+    echo "    git submodule update --init src/fairino-ros2-control"
   fi
   [ "${installed_any}" -eq 1 ] || echo "  （无已安装的核心 deb）"
 
@@ -399,8 +399,8 @@ cd "${REPO_DIR}" || exit 1
 
 if [ ! -d ".git" ]; then
   print_error "当前目录不是 git 仓库！"
-  print_info "请先克隆 panthera-ht 分支："
-  print_info "  git clone -b panthera-ht git@github.com:fiveages-sim/open-deploy-ws.git ht-deploy-ws"
+  print_info "请先克隆 fairino-art7 分支："
+  print_info "  git clone -b fairino-art7 git@github.com:fiveages-sim/open-deploy-ws.git fairino-deploys-ws"
   exit 1
 fi
 
@@ -433,9 +433,9 @@ print_info "后续步骤："
 print_info "  1. source /opt/ros/${ROS_DISTRO}/setup.bash"
 print_info "  2. ./quick_start.sh → 编译仿真/真机所需包"
 if [ "$USE_DEB_ARMS" -eq 1 ] && [ "${ARMS_VARIANT}" = "full" ]; then
-  print_info "     （arms=deb(full) 时 ht_ros2_control 已在 arms-full 中，通常只需编译 panthera_ht_description）"
+  print_info "     （arms=deb(full) 时 fairino_ros2_control 已在 arms-full 中，通常只需编译 art7_description）"
 else
-  print_info "     （arms=源码 或 arms=deb(standard) 时 ht_ros2_control 由源码编译）"
+  print_info "     （arms=源码 或 arms=deb(standard) 时 fairino_ros2_control 由源码编译）"
 fi
 print_info ""
 print_info "如需在源码与 deb 间切换，重新运行 ./init_repo.sh 并选择选项 2"

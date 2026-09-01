@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# HighTorque Panthera HT 工作空间 — deb 安装与发布打包脚本
+# Fairino ART7 工作空间 — deb 安装与发布打包脚本
 # 使用方：解压发布 zip → ./release.sh --install → ./quick_start.sh
 #         --package 含 .git（可 git pull）；--package-no-git 为纯快照包（更小）
 #
@@ -8,9 +8,9 @@
 #   conf        — 按 deb_versions.conf 固定 tag（固定版本直接拼接下载路径）
 #   latest      — GitHub Latest 稳定版（仅 GitHub API 查询）
 #   pre-release — 各仓库 pre-release 浮动标签（仅 GitHub API 查询）
-# arms 打包固定为 full 变体（含 ht_ros2_control）
+# arms 打包固定为 full 变体（含 fairino_ros2_control）
 # deb 安装顺序: ocs2 → common → arms-ros2-control-full
-# 打包 zip 中仅保留 src/robot-descriptions-ht 源码，其余子模块只保留目录
+# 打包 zip 中仅保留 src/robot-descriptions-fairino 源码，其余子模块只保留目录
 # 打包通道非 conf 时，zip 内 deb_versions.conf 的 tag 改为与打包通道一致
 #
 # 用法:
@@ -38,9 +38,9 @@ DEB_INSTALL_PATHS=()
 . "${WS_DIR}/scripts/lib_github.sh"
 . "${WS_DIR}/scripts/lib_deb.sh"
 
-# 打包时保留的源码子模块（其余由 deb 提供，含 ht_ros2_control via arms-full）
+# 打包时保留的源码子模块（其余由 deb 提供，含 fairino_ros2_control via arms-full）
 PACK_SOURCE_SUBMODULES=(
-  "src/robot-descriptions-ht"
+  "src/robot-descriptions-fairino"
 )
 
 # 打包时 arms 总是 full 变体
@@ -295,7 +295,7 @@ _write_deb_submodule_placeholder() {
   local path="$1"
   mkdir -p "${path}"
   cat > "${path}/.gitkeep" <<'EOF'
-# 此目录在发布包中已清空；对应功能由 deb 包提供（arms-full 含 ht_ros2_control）。
+# 此目录在发布包中已清空；对应功能由 deb 包提供（arms-full 含 fairino_ros2_control）。
 # 若需源码开发，请在工作空间中执行: ./init_repo.sh
 EOF
 }
@@ -387,7 +387,7 @@ create_release_zip() {
   if [[ "${include_git}" == "0" ]]; then
     git_tag="_nogit"
   fi
-  zip_name="ht_deploy_ws_${ts}_${arch}${git_tag}.zip"
+  zip_name="fairino_deploy_ws_${ts}_${arch}${git_tag}.zip"
   zip_path="${DIST_DIR}/${zip_name}"
 
   # 打包前确认 .deb_cache 已就绪（现场 --install 依赖此目录）
@@ -444,7 +444,7 @@ prepare_package_staging() {
   )
 
   need_cmd rsync || return 1
-  staging="$(mktemp -d "${TMPDIR:-/tmp}/ht_deploy_ws_release.XXXXXX")" || return 1
+  staging="$(mktemp -d "${TMPDIR:-/tmp}/fairino_deploy_ws_release.XXXXXX")" || return 1
 
   if [[ "${include_git}" == "0" ]]; then
     rsync_args+=(--exclude='.git/')
@@ -653,7 +653,7 @@ show_interactive_menu() {
   while true; do
     echo ""
     echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}    Panthera HT 部署 / 发布${NC}"
+    echo -e "${BLUE}    Fairino ART7 部署 / 发布${NC}"
     echo -e "${BLUE}  Workspace: ${WS_DIR}${NC}"
     echo -e "${BLUE}========================================${NC}"
     echo ""
@@ -771,7 +771,7 @@ usage() {
 
 若 zip 含 .git，可更新工作区脚本（需 git remote 访问权限）:
   git pull --ff-only
-  git submodule update --init -- src/robot-descriptions-ht
+  git submodule update --init -- src/robot-descriptions-fairino
   （不含 .git 的 *_nogit.zip 需重新发 zip 或自行 clone 主仓）
 
 若缺少 deb 或需更新版本:
@@ -793,7 +793,7 @@ deb 卸载顺序（安装顺序倒序）:
      --package-no-git: 仅 rsync 保留子模块文件，deb 子模块不复制、只建占位
   3. 通道非 conf 时，zip 内 deb_versions.conf 的 tag 改为与打包通道一致
   4. 导入工作区 .deb_cache 候选；按通道校验版本，匹配则复用，否则下载
-  5. 生成 ${DIST_DIR}/ht_deploy_ws_<时间>_<架构>[_nogit].zip 并删除临时目录
+  5. 生成 ${DIST_DIR}/fairino_deploy_ws_<时间>_<架构>[_nogit].zip 并删除临时目录
 
 打包前若需最新子模块，请加 --update-submodules（或运行 ./init_repo.sh 后重新打包）
 

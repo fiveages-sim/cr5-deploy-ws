@@ -87,7 +87,7 @@ resolve_only_token() {
     ocs2|ocs2_ros2|ros-jazzy-ocs2) echo "ocs2" ;;
     common|robot-descriptions-common|ros-jazzy-robot-descriptions-common) echo "common" ;;
     arms|arms_ros2_control|arms_full|arms-full|ros-jazzy-arms-ros2-control|ros-jazzy-arms-ros2-control-full) echo "arms" ;;
-    ht|ht_ros2_control|ht-ros2-control) echo "arms" ;;
+    fairino|fairino_ros2_control|fairino-ros2-control) echo "arms" ;;
     *) return 1 ;;
   esac
 }

@@ -1,6 +1,6 @@
-# HighTorque Panthera HT 机械臂 ROS2 部署工作空间
+# Fairino ART7 机械臂 ROS2 部署工作空间
 
-本仓库用于部署 HighTorque Panthera HT 机械臂的 ROS 2 工作空间，基于 OCS2 MPC 控制框架的完整控制生态系统。
+本仓库用于部署 Fairino ART7 机械臂的 ROS 2 工作空间，基于 OCS2 MPC 控制框架的完整控制生态系统。
 
 ### 前置条件
 - 系统已安装 ROS 2 Jazzy
@@ -17,18 +17,18 @@
 
 辅助脚本：[`scripts/install_core_debs.sh`](scripts/install_core_debs.sh)、[`scripts/uninstall_core_debs.sh`](scripts/uninstall_core_debs.sh)、共用函数库 [`scripts/lib_deb_common.sh`](scripts/lib_deb_common.sh)；版本映射见 [`deb_versions.conf`](deb_versions.conf)。
 
-核心 deb 安装顺序：`ocs2` → `robot-descriptions-common` → `arms-ros2-control-full`（**含 `ht_ros2_control`**）。  
-`arms=deb` 时不再拉 `ht-ros2-control` 源码；HT 描述包 `robot-descriptions-ht` 仍源码编译。
+核心 deb 安装顺序：`ocs2` → `robot-descriptions-common` → `arms-ros2-control-full`（**含 `fairino_ros2_control`**）。  
+`arms=deb` 时不再拉 `fairino-ros2-control` 源码；Fairino 描述包 `robot-descriptions-fairino` 仍源码编译。
 
 ---
 
 ## A. 快速部署方式（推荐现场）
 
-面向「解压即用」：发布包已含（或可下载）核心 deb，只需装 deb、编译 HT 描述、启动。
+面向「解压即用」：发布包已含（或可下载）核心 deb，只需装 deb、编译 Fairino 描述、启动。
 
 ```bash
-# 1) 解压发布 zip 到目标目录，例如 ~/ht-deploy-ws
-cd ~/ht-deploy-ws
+# 1) 解压发布 zip 到目标目录，例如 ~/fairino-deploys-ws
+cd ~/fairino-deploys-ws
 
 # 2) 安装核心 deb（需 sudo；zip 内已有 .deb_cache/ 时可直接装）
 ./release.sh --install
@@ -51,7 +51,7 @@ source /opt/ros/jazzy/setup.bash
 `quick_start.sh` 用于**单机单臂/双臂的日常控制**（OCS2 MPC 框架：HOLD / HOME / OCS2 / MOVEJ 状态机），是现场最常用的入口。
 
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 ./quick_start.sh
 ```
 
@@ -59,26 +59,19 @@ cd ~/ht-deploy-ws
 
 | 选项 | 说明 |
 |------|------|
-| `1) 上次启动` / `2) 另一次启动` | 直接重现最近一次/前一次的启动配置（含臂组合、仿真/真机、控制模式、拖动模式、USB 口） |
-| `编译 (Build)` | 按场景编译：`1) 仿真所需包` / `2) 真机所需包`（真机包含 `ht_ros2_control` 驱动；arms-full deb 已提供时自动跳过） |
+| `1) 上次启动` / `2) 另一次启动` | 直接重现最近一次/前一次的启动配置（含臂组合、仿真/真机） |
+| `编译 (Build)` | 按场景编译：`1) 仿真所需包` / `2) 真机所需包`（真机包含 `fairino_ros2_control` 驱动；arms-full deb 已提供时自动跳过） |
 | `启动 (Launch)` | 进入启动流程（见下） |
 
 **启动流程**（`启动 (Launch)`）：
 
 1. **臂组合**：`1) 双臂 dual`（默认）/ `2) 单臂 single` / `3) 左臂 left` / `4) 右臂 right` / `5) 手柄遥操作`
-2. **运行模式**：`1) 仿真`（默认）/ `2) 真机`（真机自动检查 `/dev/ttyACM*` 串口权限，无权限时提示 `sudo chmod a+rw`）
-3. **真机控制模式**（仅真机）：`1) mit`（默认，位置+速度+力矩+kp/kd）/ `2) effort`（纯力矩）/ `3) position`（纯位置）
-4. **拖动模式**（仅真机，可选）：低刚度 kp/kd（`hardware_joint_kp/kd` 透传），夹爪可掰动，用于人工示教
-5. **控制盒选择**（多套机械臂同机时）：自动检测或按 USB 路径指定（`xacro_usb_select`）
+2. **运行模式**：`1) 仿真`（默认）/ `2) 真机`（真机自动检查 Fairino 控制器 TCP 连通性，默认 `192.168.58.1:8081`，可用 `FAIRINO_IP` / `FAIRINO_PORT` 环境变量覆盖）
 
-底层等价命令（双臂真机 mit）：
+底层等价命令（双臂真机）：
 
 ```bash
-ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=dual hardware:=real
-# 控制模式：追加 xacro_control_mode:=effort|position
-# 拖动模式：追加 hardware_joint_kp:="0.01, ..." hardware_joint_kd:="0.1, ..." \
-#           hardware_gripper_kp:=0.001 hardware_gripper_kd:=0.01
-# 指定控制盒：追加 xacro_usb_select:=usb-0:1.2
+ros2 launch ocs2_arm_controller demo.launch.py robot:=art7 type:=dual hardware:=real
 ```
 
 启动后通过 FSM 状态机控制（详见下文「外部控制接口」）：
@@ -88,97 +81,6 @@ ros2 topic pub -1 /fsm_command std_msgs/msg/Int32 "{data: 3}"   # 1=HOME 2=HOLD 
 ```
 
 手柄遥操作（`5) 手柄遥操作`）与 OCS2 控制进程分开启动：先启动单臂/双臂控制，再启动手柄。
-
-### A.2 主从拖动遥操作：`teleop_start.sh`
-
-`teleop_start.sh` 用于**双臂主从遥操作**：master（主臂）由操作者拖动（重力补偿），slave（从臂）实时跟随 master 的运动。需要**两个终端**分别启动 master 与 slave 两个进程。
-
-```bash
-cd ~/ht-deploy-ws
-./teleop_start.sh
-```
-
-**主菜单**与 `quick_start.sh` 相同（历史启动 / 编译 / 启动），历史条目独立记录（`kind=teleop`）。
-
-**编译**：`1) 真机包`（默认，`drag_teleop_controller` + `robot-descriptions-ht` + `ht-ros2-control` + 可选的 `arms_ros2_control`/`ocs2_ros2`）/ `2) 仿真包`。
-
-**启动流程**（`启动 (Launch)`）：
-
-1. **角色**：`1) master`（默认，主臂：操作者拖动、重力补偿）/ `2) slave`（从臂：跟随主臂）
-2. **启动目标**：`1) 真机`（默认）/ `2) 仿真`
-3. **控制模式**：
-   - master：`1) mit` / `2) effort`（**默认**，纯力矩 + 重力补偿）
-   - slave：`1) mit`（**默认**）/ `2) effort` / `3) position`
-4. **力反馈**（仅 master + 真机）：`1) none`（默认）/ `2) position`（基于位置误差）/ `3) effort`（基于从臂外部力矩）
-5. **ocs2 发布**（仅 master）：是否发布 ocs2 moveJ + 夹爪位置命令（`moveJ_pub`）
-6. **控制盒选择**（真机，多盒时）
-
-> **混合遥操作（从臂用 OCS2 控制）**：从臂不一定要用 `teleop_start.sh` 的 slave 角色。
-> 从臂也可以用 `quick_start.sh` 启动 OCS2 控制（`ocs2_arm_controller`），并切换到 **MOVEJ** 状态
-> （`ros2 topic pub -1 /fsm_command std_msgs/msg/Int32 "{data: 4}"`）；此时主臂启动时选择
-> **发布 ocs2 命令**（`moveJ_pub:=true`），`Ocs2Publisher` 会把主臂关节位置发布到
-> `/ocs2_arm_controller/target_joint_position`，从臂 OCS2 控制器在 MOVEJ 状态下订阅并跟踪，
-> 同样可以实现遥操作。
->
-> **注意**：这种混合方式下从臂不是 `drag_teleop_controller` 的 slave 角色，不会发布
-> `/drag_teleop_slave/teleop_states`，主臂收不到从臂状态，因此**无法使用力反馈**
-> （`position` / `effort` 反馈都依赖从臂状态话题），只能单向跟随。
-
-底层等价命令：
-
-```bash
-# 终端 A：master（主臂，effort 模式 + 低刚度拖动）
-ros2 launch drag_teleop_controller drag_teleop_controller.launch.py \
-  robot:=panthera_ht type:=dual role:=master hardware:=real mode:=effort \
-  hardware_control_mode:=effort hardware_gripper_kp:=0 hardware_gripper_kd:=0
-
-# 终端 B：slave（从臂，mit 模式跟随）
-ros2 launch drag_teleop_controller drag_teleop_controller.launch.py \
-  robot:=panthera_ht type:=dual role:=slave hardware:=real mode:=mit
-```
-
-> 注意：`teleop_start.sh` 启动 master 时自动透传低刚度 kp/kd（`HARDWARE_JOINT_KP/KD`）并把夹爪增益清零（`hardware_gripper_kp/kd:=0`），避免位置环对抗拖动；控制模式同时同步到硬件（`hardware_control_mode`）。
-
-### A.3 主从遥操作说明
-
-**架构**：master 与 slave 各运行一个 `drag_teleop_controller` 进程（500Hz），通过话题交换状态：
-
-```
-┌─ master 进程（role:=master）─────────────┐   ┌─ slave 进程（role:=slave）─────────────┐
-│ DragTeleopController (500Hz)             │   │ DragTeleopController (500Hz)             │
-│  读硬件状态（12 臂 + 2 夹爪状态）          │   │  读硬件状态（12 臂 + 2 夹爪状态）          │
-│  τ_G = rnea(q, 0, 0)                     │   │  τ_model = M a + C v + G（q̈ 数值微分）    │
-│  订阅 /drag_teleop_slave/teleop_states   │   │  订阅 /drag_teleop_master/teleop_states   │
-│  计算 q_cmd / τ_cmd（mode × feedback）    │   │  计算 q_cmd / τ_cmd（mode，ruckig 可选）   │
-│  发布 /drag_teleop_master/teleop_states  │   │  发布 /drag_teleop_slave/teleop_states    │
-│    （正映射：master→slave 参考系）         │   │    （逆映射：slave→master 参考系）         │
-└──────────────────────────────────────────┘   └──────────────────────────────────────────┘
-```
-
-- **状态话题**：`/drag_teleop_master/teleop_states`、`/drag_teleop_slave/teleop_states`（`sensor_msgs/JointState`，500Hz）。master 发布正映射（slave 关节名），slave 发布逆映射（master 关节名），接收方直接使用。
-- **控制模式**：
-  - `position`（仅 slave）：从臂直接跟踪主臂位置
-  - `mit`：同时下发 position/velocity/effort，由硬件内部混合；力反馈基于 $q_m$、$q_s$ 误差
-  - `effort`：控制器直接下发力矩（重力补偿 + 阻抗/力反馈力矩）
-- **力反馈**（仅 master）：`position` 基于位置误差（$\Delta q = -G \cdot \text{sat}(q_m - q_s - \text{dead\_zone})$）；`effort` 基于从臂外部力矩（$\tau_{cmd} = -G \cdot \tau_{ext,slave} + \tau_G$），从臂碰撞会回推主臂。
-- **运行中切换**（无需重启）：
-
-```bash
-ros2 service call /drag_teleop_master/teleop_mode \
-  drag_teleop_controller/srv/TeleopMode "{mode: effort}"
-ros2 service call /drag_teleop_master/teleop_feedback \
-  drag_teleop_controller/srv/TeleopFeedback "{mode: position}"
-```
-
-- **检查状态**：
-
-```bash
-ros2 control list_controllers --controller-manager /drag_teleop_master/controller_manager
-ros2 topic echo /drag_teleop_master/teleop_states
-ros2 topic echo /drag_teleop_slave/teleop_states
-```
-
-- **退出**：Ctrl+C 退出时硬件自动插值回 `shutdown_home`（默认零位）后进入阻尼/抱闸（`shutdown_return_home` 可在描述包 xacro 中关闭）。
 
 ---
 
@@ -190,8 +92,8 @@ ros2 topic echo /drag_teleop_slave/teleop_states
 
 ```bash
 cd ~
-git clone -b panthera-ht git@github.com:fiveages-sim/open-deploy-ws.git ht-deploy-ws
-cd ~/ht-deploy-ws
+git clone -b fairino-art7 git@github.com:fiveages-sim/open-deploy-ws.git fairino-deploys-ws
+cd ~/fairino-deploys-ws
 ```
 
 ### 2. 初始化（`init_repo.sh`）
@@ -202,7 +104,7 @@ cd ~/ht-deploy-ws
 
 | 选项 | 说明 |
 |------|------|
-| 1) 初始化 | 逐模块 source/deb；**默认 ocs2/arms/common=deb**；arms=deb 时可选 `full`（含 `ht_ros2_control`，跳过其源码）或 `standard`（需源码初始化 `ht-ros2-control`）；arms=源码 时不拉取 `arms_ros2_control/hardwares/*` 嵌套子模块 |
+| 1) 初始化 | 逐模块 source/deb；**默认 ocs2/arms/common=deb**；arms=deb 时可选 `full`（含 `fairino_ros2_control`，跳过其源码）或 `standard`（需源码初始化 `fairino-ros2-control`）；arms=源码 时不拉取 `arms_ros2_control/hardwares/*` 嵌套子模块 |
 | 2) 切换 | 源码 ↔ deb（会清理冲突目录或卸载 deb；切 arms→deb 时同样可选择变体） |
 | 3) 仅 deb | 只安装/更新核心 deb，不拉 Git 子模块（列表含 arms 时也可选变体） |
 | 4) 卸载 deb | 先检测并提示已安装的 ocs2 / common / arms(-full)，再选择要卸载的包 |
@@ -211,12 +113,12 @@ cd ~/ht-deploy-ws
 初始化时还会询问 **deb 发布通道**：`1) latest` / `2) pre-release` / `3) conf`（见 `deb_versions.conf`）。
 
 **arms deb 变体（full / standard）**：
-- 通道为 `latest` / `pre-release` 时，arms=deb 会询问安装 `ros-jazzy-arms-ros2-control-full`（默认，含 `ht_ros2_control`）还是 `ros-jazzy-arms-ros2-control`（标准包）。
+- 通道为 `latest` / `pre-release` 时，arms=deb 会询问安装 `ros-jazzy-arms-ros2-control-full`（默认，含 `fairino_ros2_control`）还是 `ros-jazzy-arms-ros2-control`（标准包）。
 - 通道为 `conf` 时，读取 `deb_versions.conf` 中 arms 行的变体并提示确认/切换（切换仅本次运行生效，不改配置文件）。
 
 **子模块更新安全说明**：`init_repo.sh` 只会把子模块更新到其**当前分支**的最新提交（仅快进），**不会切换分支**；子模块内的本地修改会先 `git stash` 暂存、更新成功后恢复，绝不会清空你的改动，也不会改动工作空间自身所在的分支。
 
-**推荐开发起步（核心用 deb，只编 HT 描述）：**
+**推荐开发起步（核心用 deb，只编 Fairino 描述）：**
 
 ```bash
 ./init_repo.sh                    # ocs2/arms/common 选 deb（通道按需）
@@ -224,13 +126,13 @@ source /opt/ros/jazzy/setup.bash
 ./quick_start.sh                  # 编译仿真/真机所需包
 ```
 
-若要改 `arms` / `ocs2` / `ht_ros2_control` 源码：在 `init_repo.sh` 选项 2 将对应模块切到 **source**，再编译。
+若要改 `arms` / `ocs2` / `fairino_ros2_control` 源码：在 `init_repo.sh` 选项 2 将对应模块切到 **source**，再编译。
 
 ### 3. 更新子模块
 
 ```bash
-# 仅更新仍保留为源码的 HT 描述（deb 模式下常见）
-git submodule update --remote src/robot-descriptions-ht
+# 仅更新仍保留为源码的 Fairino 描述（deb 模式下常见）
+git submodule update --remote src/robot-descriptions-fairino
 
 # 若 arms 等为 source，再按需：
 # git submodule update --remote
@@ -239,7 +141,7 @@ git submodule update --remote src/robot-descriptions-ht
 ### 目录结构（节选）
 
 ```
-ht-deploy-ws/
+fairino-deploys-ws/
 ├── init_repo.sh                  # 初始化 / source-deb 切换
 ├── quick_start.sh                # 编译与启动
 ├── release.sh                    # 现场 deb 安装 / 维护者打包
@@ -249,8 +151,8 @@ ht-deploy-ws/
 │   ├── uninstall_core_debs.sh
 │   └── lib_deb_common.sh      # 共用函数库（release.sh / install_core_debs.sh source）
 └── src/
-    ├─ robot-descriptions-ht      # 通常源码（HT 模型）
-    ├─ ht-ros2-control            # arms=deb 时由 arms-full 提供，可跳过
+    ├─ robot-descriptions-fairino # 通常源码（Fairino 模型）
+    ├─ fairino-ros2-control       # arms=deb 时由 arms-full 提供，可跳过
     ├─ arms_ros2_control          # deb 模式下可跳过
     ├─ ocs2_ros2                  # deb 模式下可跳过
     └─ robot-descriptions-common  # deb 模式下可跳过
@@ -259,7 +161,7 @@ ht-deploy-ws/
 ### 常见问题
 - SSH 权限：若克隆/更新失败，请确认本机 SSH key 已添加到 GitHub，并能通过 `ssh -T git@github.com` 握手。
 - 网络问题：可重试或改用代理；必要时改为 HTTPS 克隆。
-- 切到 arms=deb 后若仍有 `install/ht_ros2_control` 残留，会遮住系统 deb 插件；删除该目录后重新 `source /opt/ros/jazzy/setup.bash` 与 workspace `install/setup.bash`。
+- 切到 arms=deb 后若仍有 `install/fairino_ros2_control` 残留，会遮住系统 deb 插件；删除该目录后重新 `source /opt/ros/jazzy/setup.bash` 与 workspace `install/setup.bash`。
 
 ---
 
@@ -283,9 +185,9 @@ ht-deploy-ws/
 - **4) 发布打包 zip（含 .git）** / **5) 发布打包 zip（不含 .git，体积更小）**
 
 发布包会：
-1. 保留 `src/robot-descriptions-ht` 源码；其余子模块改为占位（由 deb 提供）
+1. 保留 `src/robot-descriptions-fairino` 源码；其余子模块改为占位（由 deb 提供）
 2. 下载目标架构最新核心 deb 到 `.deb_cache/`（已有匹配缓存则复用）
-3. 输出到 `dist/ht_deploy_ws_<时间>_<架构>[_nogit].zip`
+3. 输出到 `dist/fairino_deploy_ws_<时间>_<架构>[_nogit].zip`
 
 现场使用见上文「快速部署方式」。
 
@@ -313,7 +215,7 @@ ht-deploy-ws/
 ### 2.1 依赖安装
 * Rosdep 依赖安装
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
@@ -322,24 +224,24 @@ rosdep install --from-paths src --ignore-src -r -y
 本工作空间已经提供一键脚本 `quick_start.sh`，用于**按场景编译**与**按模式启动**（单臂 / 双臂，仿真 / 真机）。
 
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 chmod +x ./quick_start.sh
 ./quick_start.sh
 ```
 
 - 在菜单中选择 **`1) 编译 (Build)`**
   - **`1) 编译仿真所需包`**：用于仿真/开发（不依赖真机驱动）
-  - **`2) 编译真机所需包`**：用于连接真机（`arms-full` deb 已含 `ht_ros2_control` 时通常只需编描述包）
+  - **`2) 编译真机所需包`**：用于连接真机（`arms-full` deb 已含 `fairino_ros2_control` 时通常只需编描述包）
 
 <details>
 <summary><strong>（可选）手动编译命令</strong></summary>
 
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 # 仿真所需包
 colcon build --packages-up-to \
   ocs2_arm_controller \
-  panthera_ht_description \
+  art7_description \
   arms_teleop \
   adaptive_gripper_controller \
   basic_joint_controller \
@@ -347,12 +249,12 @@ colcon build --packages-up-to \
 ```
 
 ```bash
-cd ~/ht-deploy-ws
-# 真机所需包（ht_ros2_control 若已由 arms-full deb 提供则可省略）
+cd ~/fairino-deploys-ws
+# 真机所需包（fairino_ros2_control 若已由 arms-full deb 提供则可省略）
 colcon build --packages-up-to \
-  ht_ros2_control \
+  fairino_ros2_control \
   ocs2_arm_controller \
-  panthera_ht_description \
+  art7_description \
   arms_teleop \
   adaptive_gripper_controller \
   basic_joint_controller \
@@ -364,31 +266,30 @@ colcon build --packages-up-to \
 ### 2.3 仿真验证
 #### 2.3.1 模型可视化
 ```bash
-source ~/ht-deploy-ws/install/setup.bash
-ros2 launch robot_common_launch manipulator.launch.py robot:=panthera_ht
+source ~/fairino-deploys-ws/install/setup.bash
+ros2 launch robot_common_launch manipulator.launch.py robot:=art7
 ```
 
 双臂：
 ```bash
-ros2 launch robot_common_launch manipulator.launch.py robot:=panthera_ht type:=dual
+ros2 launch robot_common_launch manipulator.launch.py robot:=art7 type:=dual
 ```
 
-**双臂间距**：只改一处即可，文件为
-`src/robot-descriptions-ht/panthera_ht_description/xacro/robot.xacro`
-中的 `left_mount_xyz` / `right_mount_xyz`（默认约为 `0 ±0.35 0`，单位 m）。
-姿态用 `left_mount_rpy` / `right_mount_rpy`。
+**末端配置**：左右臂末端类型在 `src/robot-descriptions-fairino/art7_description/xacro/robot.xacro` 中通过
+`type` / `left_type` / `right_type` 参数选择（如 `rg75`、`ag2f90` 等，见 `art7_description` README 的末端键表）；
+左右 TCP 偏移用 `left_tcp_offset_xyz/rpy` / `right_tcp_offset_xyz/rpy`。
 
 当前 `ocs2_arm_controller` 启动时会从同一份 `xacro/robot.xacro` 生成规划 URDF
 （缓存到 `/tmp/...`）。
 改默认值后重新编译/安装描述包（或 `--symlink-install` 下直接重启 launch）即可对可视化与 OCS2 同时生效。
 日常仿真/真机控制以 xacro 为准。
-更完整说明见 `panthera_ht_description` 子模块 README 的 *Mount parameters* 一节。
+更完整说明见 `art7_description` 子模块 README。
 
 #### 2.3.2 启动仿真中的控制
 推荐直接用 `quick_start.sh` 启动（会自动 `source install/setup.bash`，前提是已成功编译生成 `install/`）。
 
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 ./quick_start.sh
 ```
 
@@ -400,51 +301,50 @@ cd ~/ht-deploy-ws
 <summary><strong>（可选）手动启动仿真控制</strong></summary>
 
 ```bash
-source ~/ht-deploy-ws/install/setup.bash
+source ~/fairino-deploys-ws/install/setup.bash
 # 单臂
-ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht
+ros2 launch ocs2_arm_controller demo.launch.py robot:=art7
 # 双臂
-ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=dual
+ros2 launch ocs2_arm_controller demo.launch.py robot:=art7 type:=dual
 ```
 
 </details>
 
 #### 2.3.3 启动真机的控制
 
-**启动真机前先确认电机串口：**
+**启动真机前先确认 Fairino 控制器网络连通：**
 
 ```bash
-# 1) 查看设备是否存在（应列出 /dev/ttyACM0 等）
-ls /dev/ttyACM*
+# 1) 检查控制器 IP 是否可达（默认 192.168.58.1，端口 8081）
+ping 192.168.58.1
+# 或直接测试 TCP 端口：
+timeout 3 bash -c "exec 3<>/dev/tcp/192.168.58.1/8081" && echo OK
 
-# 2) 若无输出：检查 USB 线、供电与驱动；确认 Panthera.yaml 中 Serial_Type 为 /dev/ttyACM
-# 3) 有设备后赋予当前用户读写权限（每次插拔后可能需重新执行）
-sudo chmod a+rw /dev/ttyACM*
+# 2) 若不通：检查网线连接、控制器供电，以及 fairino_ros2_control 的 device_ip 参数
+# 3) 控制器 IP 与默认不同时，可用环境变量覆盖：
+FAIRINO_IP=<控制器IP> FAIRINO_PORT=<端口> ./quick_start.sh
 ```
-
-也可将用户加入 `dialout` 组后重新登录，减少反复 `chmod`：
-`sudo usermod -aG dialout $USER`
 
 然后：
 
 ```bash
-cd ~/ht-deploy-ws
+cd ~/fairino-deploys-ws
 ./quick_start.sh
 ```
 
 - 选择 **`2) 启动 (Launch)`**
   - 选择单臂或双臂
-  - 选择 **`2) 真机 (Real Hardware)`**
+  - 选择 **`2) 真机 (Real Hardware)`**（启动前自动检查控制器 TCP 连通性）
 
 <details>
 <summary><strong>（可选）手动启动真机控制</strong></summary>
 
 ```bash
-source ~/ht-deploy-ws/install/setup.bash
+source ~/fairino-deploys-ws/install/setup.bash
 # 单臂（请显式 type:=single）
-ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=single hardware:=real
+ros2 launch ocs2_arm_controller demo.launch.py robot:=art7 type:=single hardware:=real
 # 双臂
-ros2 launch ocs2_arm_controller demo.launch.py robot:=panthera_ht type:=dual hardware:=real
+ros2 launch ocs2_arm_controller demo.launch.py robot:=art7 type:=dual hardware:=real
 ```
 
 </details>
@@ -464,7 +364,7 @@ sudo apt install ros-jazzy-joy
 
 或手动：
 ```bash
-source ~/ht-deploy-ws/install/setup.bash
+source ~/fairino-deploys-ws/install/setup.bash
 ros2 launch arms_teleop joystick_teleop.launch.py
 # 多手柄时指定设备：
 # ros2 launch arms_teleop joystick_teleop.launch.py joy_dev:=/dev/input/js1
@@ -594,7 +494,7 @@ ros2 topic pub -1 /left_target/twist geometry_msgs/msg/Twist \
 ## 4. 子模块说明
 
 - **arms_ros2_control** - 机械臂通用 ROS2 控制（含 `arms_teleop`）；deb 可用 `arms-ros2-control-full`
-- **ht-ros2-control** - Panthera HT 硬件驱动（`ht_ros2_control`）；**已包含在 arms-full deb 中**
+- **fairino-ros2-control** - Fairino 硬件驱动（`fairino_ros2_control`，TCP 连接控制器）；**已包含在 arms-full deb 中**
 - **ocs2_ros2** - OCS2 的 ROS2 版本（MPC 控制框架）
-- **robot-descriptions-ht** - HighTorque 描述仓库（含 `panthera_ht_description`，发布包保留源码）
+- **robot-descriptions-fairino** - Fairino 描述仓库（含 `art7_description`，发布包保留源码）
 - **robot-descriptions-common** - 通用机器人组件（夹爪、相机、launch 等）

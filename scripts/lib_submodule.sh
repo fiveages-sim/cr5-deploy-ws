@@ -23,14 +23,14 @@ path_is_git_checkout() {
   (cd "${REPO_DIR}/${path}" && git rev-parse --git-dir >/dev/null 2>&1)
 }
 
-# 顶层子模块：已选 deb 的模块跳过；arms-full 时跳过 src/ht-ros2-control
+# 顶层子模块：已选 deb 的模块跳过；arms-full 时跳过 src/fairino-ros2-control
 should_skip_top_submodule() {
   local path="$1"
   case "${path}" in
     src/ocs2_ros2) [ "${USE_DEB_OCS2:-0}" -eq 1 ] && return 0 ;;
     src/arms_ros2_control) [ "${USE_DEB_ARMS:-0}" -eq 1 ] && return 0 ;;
     src/robot-descriptions-common) [ "${USE_DEB_COMMON:-0}" -eq 1 ] && return 0 ;;
-    src/ht-ros2-control) [ "${USE_DEB_ARMS:-0}" -eq 1 ] && [ "${ARMS_VARIANT:-full}" = "full" ] && return 0 ;;
+    src/fairino-ros2-control) [ "${USE_DEB_ARMS:-0}" -eq 1 ] && [ "${ARMS_VARIANT:-full}" = "full" ] && return 0 ;;
   esac
   return 1
 }
@@ -179,7 +179,7 @@ detect_module_state() {
   fi
 }
 
-# 初始化并迭代更新所有非 deb 子模块（跳过 hardwares/*；arms-full 跳过 ht-ros2-control）
+# 初始化并迭代更新所有非 deb 子模块（跳过 hardwares/*；arms-full 跳过 fairino-ros2-control）
 init_workspace_submodules() {
   local path
   local -a init_paths=()

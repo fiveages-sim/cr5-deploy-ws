@@ -10,14 +10,9 @@
 	path = src/robot-descriptions-common
 	url = git@github.com:fiveages-sim/robot-descriptions-common.git
 	branch = main
-[submodule "src/robot-descriptions-ht"]
-	path = src/robot-descriptions-ht
-	url = git@github.com:fiveages-sim/robot-descriptions-ht.git
-	branch = main
-[submodule "src/ht-ros2-control"]
-	path = src/ht-ros2-control
-	url = git@github.com:fiveages-sim/ht-ros2-control.git
-	branch = main
-[submodule "src/drag_teleop_controller"]
-	path = src/drag_teleop_controller
-	url = git@github.com:fiveages-sim/drag_teleop_controller.git
+[submodule "src/fairino-ros2-control"]
+	path = src/fairino-ros2-control
+	url = git@github.com:fiveages-sim/fairino-ros2-control.git
+[submodule "src/robot-descriptions-fairino"]
+	path = src/robot-descriptions-fairino
+	url = git@github.com:fiveages-sim/robot-descriptions-fairino.git

@@ -27,7 +27,7 @@ usage() {
 从 deb_versions.conf 读取仓库信息，按依赖顺序安装核心 deb 包：
   1. ros-jazzy-ocs2
   2. ros-jazzy-robot-descriptions-common
-  3. ros-jazzy-arms-ros2-control-full（含 ht_ros2_control 等硬件驱动）
+  3. ros-jazzy-arms-ros2-control-full（含 fairino_ros2_control 等硬件驱动）
 
   --channel <name>      发布通道（默认 conf，按 deb_versions.conf 固定 tag）：
                          conf       使用 deb_versions.conf 中的固定 tag
