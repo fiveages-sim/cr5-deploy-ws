@@ -221,12 +221,14 @@ init_module_submodules() {
   init_submodule_recursive "" "${path}"
 }
 
-# 仅对源码子模块路径运行 rosdep
+# 仅对工作区中「已有源码内容」的子模块路径运行 rosdep
+# 注意：不以 USE_DEB_* 默认为准（选项「仅运行 rosdep」不会交互选择方式，
+# 若按默认全 deb 会误跳过 fairino-ros2-control 等仍存在的源码树）。
 run_rosdep_install() {
   local path
   local -a rosdep_paths=()
 
-  print_info "运行 rosdep install（仅源码子模块路径）..."
+  print_info "运行 rosdep install（已检出源码的子模块路径）..."
   if ! command -v rosdep >/dev/null 2>&1; then
     print_error "未找到 rosdep，请先安装 ROS 环境后重试"
     print_info "  sudo apt install python3-rosdep"
@@ -235,7 +237,7 @@ run_rosdep_install() {
   fi
 
   while IFS= read -r path; do
-    should_skip_top_submodule "${path}" && continue
+    path_has_content "${path}" || continue
     rosdep_paths+=("${path}")
   done < <(all_submodule_paths)
 
@@ -244,6 +246,7 @@ run_rosdep_install() {
     return 0
   fi
 
+  print_info "rosdep 路径: ${rosdep_paths[*]}"
   rosdep install --from-paths "${rosdep_paths[@]}" --ignore-src -r -y \
     || print_warn "rosdep 安装部分依赖失败，可稍后重试或检查 package.xml"
 }

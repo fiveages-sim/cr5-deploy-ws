@@ -57,8 +57,9 @@ is_valid_deb_file() {
   local actual_size=""
   [[ -f "$deb_file" ]] || return 1
   actual_size="$(deb_file_size "$deb_file")"
-  [[ -n "$actual_size" && "$actual_size" -gt 0 ]] || return 1
-  if [[ -n "$expected_size" && "$actual_size" -ne "$expected_size" ]]; then
+  # 必须用纯数字比较；非数字 expected_size（如 HTML 回退得到的文件名）会触发 set -u 下的算术展开错误
+  [[ "$actual_size" =~ ^[0-9]+$ && "$actual_size" -gt 0 ]] || return 1
+  if [[ "$expected_size" =~ ^[0-9]+$ && "$actual_size" -ne "$expected_size" ]]; then
     return 1
   fi
   ar t "$deb_file" >/dev/null 2>&1 || return 1
@@ -114,9 +115,11 @@ lookup_asset_size() {
   local asset_name="$1"; shift
   local line name size
   for line in "$@"; do
+    # HTML 回退只有文件名（无 |size）；无管道符时不算有效 size
+    [[ "$line" == *"|"* ]] || continue
     name="${line%%|*}"
     size="${line#*|}"
-    if [[ "$name" == "$asset_name" ]]; then
+    if [[ "$name" == "$asset_name" && "$size" =~ ^[0-9]+$ ]]; then
       printf '%s' "$size"
       return 0
     fi
