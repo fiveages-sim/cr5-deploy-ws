@@ -730,8 +730,8 @@ cd "$REPO_DIR"
 
 if [ ! -d ".git" ]; then
  print_error "当前目录不是 git 仓库！"
- print_info "请先克隆 main 分支："
- print_info " git clone git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws"
+ print_info "请先克隆 arx-lift2s 分支："
+ print_info " git clone -b arx-lift2s git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws"
  exit 1
 fi
 
