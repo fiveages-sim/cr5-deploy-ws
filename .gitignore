@@ -33,6 +33,9 @@ config/robot.local.yaml
 # Local quick_start last-launch record
 config/launch_last.conf
 
+# Local init_repo module mode (source/deb preferences)
+.core_module_mode
+
 # deb 安装脚本下载缓存（install_core_debs.sh / release.sh）
 .deb_cache/
 

@@ -3,6 +3,7 @@
 # ARX Lift2S / ACone ROS2 部署工作空间初始化脚本
 # 功能：逐模块 source/deb 初始化子模块；arms 默认 full（含 arx_ros2_control）
 # arms=deb(full) 时跳过 src/arx-ros2-control；--init-release 仅 init 描述子模块
+# 子模块更新策略（对齐 fa_w2）：检出 .gitmodules 分支（或保留当前分支）并 merge 到 tip
 
 set -u
 
@@ -19,6 +20,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$SCRIPT_DIR"
 MODE_STATE_FILE="$REPO_DIR/.core_module_mode"
 
+# 嵌套子模块：仅更新白名单到各自分支 tip（跳过 hardwares/*，真机 HI 用顶层 arx-ros2-control）
+declare -A NESTED_SUBMODULES=(
+  ["src/arms_ros2_control"]="libraries/lina_planning libraries/ocs2_humanoid controller/ocs2_wbc_controller"
+)
+
 QS_CONFIG="${REPO_DIR}/config/quick_start.conf"
 if [[ -f "${QS_CONFIG}" ]]; then
   # shellcheck source=/dev/null
@@ -33,6 +39,8 @@ UPDATE_MODE=false
 SKIP_MENU=false
 INIT_SUBSET=""
 FLOW="init"
+# true：有 named branch 时保留并更新该分支；false：强制切到 .gitmodules 默认分支
+KEEP_BRANCH=true
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,16 +61,26 @@ while [[ $# -gt 0 ]]; do
       INIT_SUBSET="release"
       shift
       ;;
+    --default-branch)
+      KEEP_BRANCH=false
+      shift
+      ;;
+    --keep-branch)
+      KEEP_BRANCH=true
+      shift
+      ;;
     --rosdep)
       SKIP_MENU=true
       FLOW="rosdep"
       shift
       ;;
     --help|-h)
-      echo "用法: $0 [--init-release] [--update-release] [--rosdep]"
+      echo "用法: $0 [--init-release] [--update-release] [--default-branch|--keep-branch] [--rosdep]"
       echo "  无参数：交互菜单（source/deb、deb 通道、arms 变体）"
-      echo "  --init-release   仅初始化发布所需子模块（robot-descriptions-arx）"
-      echo "  --update-release 仅更新发布所需子模块"
+      echo "  --init-release    仅初始化发布所需子模块（robot-descriptions-arx）"
+      echo "  --update-release  仅更新发布所需子模块到分支 tip"
+      echo "  --keep-branch     保留子模块当前分支并更新到 tip（默认）"
+      echo "  --default-branch  强制切换到 .gitmodules 配置的默认分支再更新"
       exit 0
       ;;
     *)
@@ -450,38 +468,62 @@ should_skip_nested_submodule() {
  return 1
 }
 
-# 将指定子模块更新到当前分支的最新提交。
+# 将指定子模块更新到目标分支 tip（对齐 fa_w2）。
 # 安全约束：
-# 1) 绝不切换分支（不执行 git checkout），只对当前分支做 --ff-only 快进；
-# 2) 本地修改先 git stash 暂存，更新成功后 stash pop 恢复，绝不 reset --hard；
-# 3) 顶层保护：若进入的 git 仓库就是工作空间自身，直接跳过，避免改动工作空间分支。
+# 1) KEEP_BRANCH=true 且已在 named branch → 保留该分支；否则（含 detached）切到 default_branch；
+# 2) 本地修改先 stash，更新后 stash pop；绝不 reset --hard；
+# 3) 若工作区仅有「已跟踪文件缺失」，先 restore，避免 stash pop 再删空；
+# 4) 顶层保护：若进入的 git 仓库就是工作空间自身，直接跳过。
 # $1 = 子模块路径（相对 REPO_DIR）
+# $2 = 默认分支（来自 .gitmodules；可空，此时读顶层 .gitmodules 或回退 main）
 update_submodule_to_latest() {
  local path="$1"
+ local default_branch="${2:-}"
  local stashed=0
+ local rc=0
 
  if [ ! -d "$path" ]; then
  print_warn "子模块路径不存在: $path"
  return 0
  fi
 
+ if [ -z "$default_branch" ]; then
+ default_branch="$(git -C "$REPO_DIR" config --file "$REPO_DIR/.gitmodules" --get "submodule.$path.branch" 2>/dev/null || echo main)"
+ fi
+
  print_info "处理子模块: $path"
- # 子 shell 执行，避免 cd 泄漏影响后续路径
  (
- cd "$path" || { print_warn "无法进入目录 $path，跳过"; exit 0; }
+ cd "$REPO_DIR/$path" || { print_warn "无法进入目录 $path，跳过"; exit 0; }
 
  if ! git rev-parse --git-dir > /dev/null 2>&1; then
  print_warn "子模块 $path 不是有效的 git 仓库，跳过"
  exit 0
  fi
 
- # 顶层保护：绝不操作工作空间自身所在仓库
+ # 确保在子模块自身仓库根（占位目录会冒泡到父仓）
+ abs_path="$(pwd)"
+ abs_toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+ if [ -z "$abs_toplevel" ] || [ "$abs_path" != "$abs_toplevel" ]; then
+ print_warn "子模块 $path 未正确检出，跳过"
+ exit 0
+ fi
+
  if [ "$(git rev-parse --show-toplevel 2>/dev/null || true)" = "$REPO_DIR" ]; then
  print_warn "跳过 $path：它指向顶层工作空间仓库（避免修改工作空间分支）"
  exit 0
  fi
 
- # 暂存本地修改（更新后恢复），绝不删除
+ # 半残工作区：仅有删除、无内容改动 → 先恢复检出
+ if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+ n_deleted="$(git ls-files -d 2>/dev/null | wc -l)"
+ n_dirty="$(git diff --name-only --diff-filter=ACMRTUXB HEAD -- 2>/dev/null | wc -l)"
+ if [ "$n_deleted" -gt 0 ] && [ "$n_dirty" -eq 0 ]; then
+ print_warn " 检测到工作区文件缺失（${n_deleted} 个），先恢复检出..."
+ git restore . 2>/dev/null || git checkout -- . 2>/dev/null \
+ || { print_warn " 恢复检出失败，跳过更新"; exit 0; }
+ fi
+ fi
+
  if ! git diff-index --quiet HEAD -- 2>/dev/null; then
  print_warn " 检测到本地修改，先暂存（更新后恢复）..."
  if ! git stash push -m "Auto-stash before submodule update" 2>/dev/null; then
@@ -495,35 +537,92 @@ update_submodule_to_latest() {
  git fetch origin 2>/dev/null || print_warn " 获取远程更新失败，继续..."
 
  current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")"
- if [ "$current_branch" = "HEAD" ]; then
- # 游离 HEAD：仅尝试快进到 FETCH_HEAD，不切换分支
- git merge --ff-only FETCH_HEAD 2>/dev/null \
- && print_info " 已快进到远端提交" \
- || print_warn " 游离 HEAD 且无法快进，跳过（不改动分支）"
- elif git rev-parse --verify --quiet "refs/remotes/origin/$current_branch" >/dev/null 2>&1; then
- print_info " 更新当前分支 $current_branch 到最新..."
- # 仅快进合并：不切分支、不强制、不改写历史
- git merge --ff-only "origin/$current_branch" 2>/dev/null \
- || print_warn " 无法快进更新（本地有未推送提交或冲突），保留当前状态"
+ branch_name="$default_branch"
+ if [ "$KEEP_BRANCH" = true ] && [ "$current_branch" != "HEAD" ] && [ -n "$current_branch" ]; then
+ branch_name="$current_branch"
+ if [ "$current_branch" != "$default_branch" ]; then
+ print_info " 保留当前分支: $branch_name（默认: $default_branch）"
+ fi
+ elif [ "$current_branch" = "HEAD" ]; then
+ print_info " 当前 detached HEAD，切换到默认分支: $branch_name"
  else
- print_warn " 远端无分支 origin/$current_branch，跳过更新"
+ print_info " 目标分支: $branch_name"
  fi
 
- # 恢复暂存的本地修改
+ if ! git rev-parse --verify --quiet "refs/remotes/origin/$branch_name" >/dev/null 2>&1; then
+ # 再试 ls-remote（本地可能尚无 remote-tracking ref）
+ if ! git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
+ print_warn " 远端无分支 origin/$branch_name，跳过 $path"
+ [ "$stashed" -eq 1 ] && git stash pop >/dev/null 2>&1 || true
+ exit 1
+ fi
+ git fetch origin "$branch_name" 2>/dev/null || true
+ fi
+
+ current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")"
+ if [ "$current_branch" != "$branch_name" ]; then
+ print_info " 从 $current_branch 切换到 $branch_name..."
+ if git show-ref --verify --quiet "refs/heads/$branch_name"; then
+ git checkout "$branch_name" 2>/dev/null || git checkout -f "$branch_name" \
+ || { print_error " 无法切换到 $branch_name"; exit 1; }
+ else
+ git checkout -b "$branch_name" "origin/$branch_name" 2>/dev/null \
+ || git checkout "$branch_name" 2>/dev/null \
+ || { print_error " 无法创建/切换到 $branch_name"; exit 1; }
+ fi
+ final_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")"
+ if [ "$final_branch" != "$branch_name" ]; then
+ print_error " 切换失败：仍在 $final_branch，目标 $branch_name"
+ exit 1
+ fi
+ else
+ print_info " 已在 $branch_name 分支"
+ fi
+
+ git fetch origin "$branch_name" 2>/dev/null || true
+ local_commit="$(git rev-parse HEAD 2>/dev/null)"
+ remote_commit="$(git rev-parse "origin/$branch_name" 2>/dev/null || true)"
+ if [ -z "$remote_commit" ]; then
+ print_warn " 无法解析 origin/$branch_name，跳过合并"
+ elif [ "$local_commit" = "$remote_commit" ]; then
+ print_info " 已是最新提交"
+ else
+ print_info " 合并 origin/$branch_name 到 tip..."
+ if git merge "origin/$branch_name" --no-edit; then
+ print_info " ✓ 已更新到最新提交"
+ else
+ conflicted="$(git ls-files -u 2>/dev/null | awk '{print $4}' | sort -u)"
+ if [ -n "$conflicted" ]; then
+ print_error " 合并冲突，请手动解决: $path"
+ echo "$conflicted" | while read -r f; do print_warn "   - $f"; done
+ [ "$stashed" -eq 1 ] && print_warn " 本地修改仍在 stash 中"
+ exit 1
+ fi
+ print_warn " 合并失败且未检测到冲突，继续"
+ fi
+ fi
+
  if [ "$stashed" -eq 1 ]; then
  print_info " 恢复本地暂存的修改..."
  git stash pop 2>/dev/null \
- || print_warn " 暂存恢复失败（可手动执行: git -C \"$path\" stash pop）"
+ || print_warn " 暂存恢复失败（可手动: git -C \"$path\" stash pop）"
  fi
+ exit 0
  )
- print_info "✓ $path 已更新到当前分支最新（不改动分支）"
+ rc=$?
+ if [ "$rc" -eq 0 ]; then
+ print_info "✓ $path 已更新到分支 tip"
+ else
+ print_warn "✗ $path 更新未完全成功（rc=$rc）"
+ fi
+ return "$rc"
 }
 
-# 递归初始化并更新子模块（含嵌套内容）
+# 初始化/更新顶层子模块，并按白名单处理嵌套子模块到分支 tip
 # $1 = 父路径（顶层为 ""）；$2 = 子路径（相对父路径）
 init_submodule_recursive() {
  local parent="$1" nested="$2"
- local path rel_branch sub
+ local path default_branch nested_config nested_path nested_branch
 
  if [ -n "$parent" ]; then
  path="$parent/$nested"
@@ -531,37 +630,66 @@ init_submodule_recursive() {
  path="$nested"
  fi
 
- # 分支名：读取最近一层父 .gitmodules 中的配置（仅用于提示，不做切换）
  if [ -n "$parent" ] && [ -f "$parent/.gitmodules" ]; then
- rel_branch="$(git -C "$parent" config --file "$parent/.gitmodules" --get "submodule.$nested.branch" 2>/dev/null || echo main)"
+ default_branch="$(git -C "$parent" config --file .gitmodules --get "submodule.$nested.branch" 2>/dev/null || echo main)"
  else
- rel_branch="$(git config --file .gitmodules --get "submodule.$path.branch" 2>/dev/null || echo main)"
+ default_branch="$(git config --file .gitmodules --get "submodule.$path.branch" 2>/dev/null || echo main)"
  fi
 
- # 初始化当前子模块的嵌套子模块（arms=源码 时跳过 hardwares/*）
- if [ -e "$path/.git" ] && [ -f "$path/.gitmodules" ]; then
- while IFS= read -r sub; do
- if should_skip_nested_submodule "$path" "$sub"; then
- print_info "跳过嵌套子模块（arms 源码模式）: $path/$sub"
+ update_submodule_to_latest "$path" "$default_branch" || true
+
+ nested_config="${NESTED_SUBMODULES[$path]:-}"
+ if [ -z "$nested_config" ]; then
+ return 0
+ fi
+ if [ ! -e "$path/.git" ] || [ ! -f "$path/.gitmodules" ]; then
+ print_warn "跳过嵌套更新：缺少 $path/.git 或 .gitmodules"
+ return 0
+ fi
+
+ print_info "更新 $path 的嵌套子模块（白名单）..."
+ if [ "$nested_config" = "*" ]; then
+ while IFS= read -r nested_path; do
+ [ -z "$nested_path" ] && continue
+ if should_skip_nested_submodule "$path" "$nested_path"; then
+ print_info " 跳过嵌套子模块（arms 源码模式）: $path/$nested_path"
  continue
  fi
- git -C "$path" submodule update --init -- "$sub" 2>/dev/null \
- || print_warn "初始化嵌套子模块失败: $path/$sub"
- done < <(git -C "$path" config --file "$path/.gitmodules" --get-regexp path 2>/dev/null | awk '{print $2}')
- fi
-
- # 更新当前子模块到当前分支最新
- update_submodule_to_latest "$path"
-
- # 递归处理嵌套子模块
- if [ -f "$path/.gitmodules" ]; then
- while IFS= read -r sub; do
- if should_skip_nested_submodule "$path" "$sub"; then
+ if ! git -C "$path" submodule update --init -- "$nested_path"; then
+ print_warn "初始化嵌套子模块失败: $path/$nested_path"
  continue
  fi
- init_submodule_recursive "$path" "$sub"
- done < <(git -C "$path" config --file "$path/.gitmodules" --get-regexp path 2>/dev/null | awk '{print $2}')
+ nested_branch="$(git -C "$path" config --file .gitmodules --get "submodule.$nested_path.branch" 2>/dev/null || echo main)"
+ update_submodule_to_latest "$path/$nested_path" "$nested_branch" || true
+ done < <(git -C "$path" config --file .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}')
+ return 0
  fi
+
+ # shellcheck disable=SC2206
+ local nested_paths=($nested_config)
+ for nested_path in "${nested_paths[@]}"; do
+ if should_skip_nested_submodule "$path" "$nested_path"; then
+ print_info " 跳过嵌套子模块（arms 源码模式）: $path/$nested_path"
+ continue
+ fi
+ if [ "$(git -C "$path" config --file .gitmodules --get "submodule.$nested_path.path" 2>/dev/null)" != "$nested_path" ]; then
+ print_warn " 嵌套子模块未在 .gitmodules 中配置: $nested_path"
+ continue
+ fi
+ print_info " 处理嵌套子模块: $path/$nested_path"
+ if [ ! -e "$path/$nested_path/.git" ]; then
+ if ! git -C "$path" submodule update --init -- "$nested_path"; then
+ print_warn " 初始化失败: $path/$nested_path"
+ continue
+ fi
+ fi
+ if [ ! -e "$path/$nested_path/.git" ]; then
+ print_warn " 嵌套路径仍未检出: $path/$nested_path"
+ continue
+ fi
+ nested_branch="$(git -C "$path" config --file .gitmodules --get "submodule.$nested_path.branch" 2>/dev/null || echo main)"
+ update_submodule_to_latest "$path/$nested_path" "$nested_branch" || true
+ done
 }
 
 switch_uninstall_debs_for_source_targets() {
@@ -794,7 +922,7 @@ else
  print_info "无需要初始化的顶层源码子模块"
 fi
 
-print_info "将源码子模块更新到当前分支的最新提交（含嵌套子模块，不切换分支）..."
+print_info "将源码子模块更新到分支 tip（KEEP_BRANCH=${KEEP_BRANCH}；含 arms 嵌套白名单）..."
 
 for submodule_path in "${init_paths[@]}"; do
  init_submodule_recursive "" "$submodule_path"
@@ -838,10 +966,11 @@ else
 fi
 print_info ""
 print_info "如需在源码与 deb 间切换，重新运行 ./init_repo.sh 并选择选项 2"
+print_info "子模块默认保留当前分支更新；强制默认分支: ./init_repo.sh --default-branch"
 if [ "$USE_DEB_ARMS" -eq 0 ] || [ "$ARMS_VARIANT" = "standard" ]; then
- print_info "如需更新 ARX 源码子模块，可以运行："
- print_info " git submodule update --remote src/robot-descriptions-arx src/arx-ros2-control"
+ print_info "如需单独更新 ARX 源码子模块，可再跑一次 init，或："
+ print_info " git -C src/arx-ros2-control fetch && git -C src/arx-ros2-control merge --ff-only origin/main"
 else
- print_info "如需更新 ARX 描述子模块，可以运行："
- print_info " git submodule update --remote src/robot-descriptions-arx"
+ print_info "如需更新 ARX 描述子模块，可再跑一次 init，或："
+ print_info " git -C src/robot-descriptions-arx fetch && git -C src/robot-descriptions-arx merge --ff-only origin/main"
 fi
