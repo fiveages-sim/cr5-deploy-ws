@@ -17,8 +17,8 @@
   # 1) 切换到用户主目录
   cd ~
   
-  # 2) 克隆仓库到 lift2s-ws（目录名可按需修改）
-  git clone git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws
+  # 2) 克隆 arx-lift2s 分支到 lift2s-ws（目录名可按需修改）
+  git clone -b arx-lift2s git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws
   
   # 3) 进入仓库目录
   cd ~/lift2s-ws

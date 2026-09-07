@@ -17,8 +17,8 @@ ARX (Fangzhou) model descriptions live in the submodule [`src/robot-descriptions
   # 1) Change to the home directory
   cd ~
   
-  # 2) Clone into lift2s-ws (directory name can be changed as needed)
-  git clone git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws
+  # 2) Clone the arx-lift2s branch into lift2s-ws (directory name can be changed as needed)
+  git clone -b arx-lift2s git@github.com:fiveages-sim/open-deploy-ws.git lift2s-ws
   
   # 3) Enter the repository directory
   cd ~/lift2s-ws
