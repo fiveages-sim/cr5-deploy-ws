@@ -41,6 +41,7 @@ DEB_INSTALL_PATHS=()
 # 打包时保留的源码子模块（其余由 deb 提供，含 ht_ros2_control via arms-full）
 PACK_SOURCE_SUBMODULES=(
   "src/robot-descriptions-ht"
+  "src/drag_teleop_controller"
 )
 
 # 打包时 arms 总是 full 变体
