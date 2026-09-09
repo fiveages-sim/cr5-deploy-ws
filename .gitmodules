@@ -14,3 +14,11 @@
 	path = src/wujihand2-ros2-control
 	url = git@github.com:fiveages-sim/wujihand2-ros2-control.git
 	branch = main
+[submodule "src/vive_tracker_teleop"]
+	path = src/vive_tracker_teleop
+	url = git@github.com:fiveages-sim/vive_tracker_teleop.git
+	branch = feature/wujiglove
+[submodule "src/wuji_glove_teleop"]
+	path = src/wuji_glove_teleop
+	url = git@github.com:fiveages-sim/wuji_glove_teleop.git
+	branch = feature/rename
